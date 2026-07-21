@@ -1,0 +1,15 @@
+{
+  "name": "draft",
+  "description": "Write a draft (paper/notes) as tex from the material in the job's work/ dir.",
+  "kind": "understanding",
+  "workdir": "job",
+  "team": {
+    "lead": "pi",
+    "workers": ["worker"],
+    "verifier": "verifier",
+    "extra": ["writer"]
+  },
+  "deliverable": { "type": "tex", "path": "out/draft.tex" },
+  "checks": { "command": "" },
+  "defaults": { "rounds": 4, "worker_count": 2, "budget_tokens": 300000 }
+}

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="5">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ID}}</title>
+<style>
+  :root { color-scheme: light dark; --fg:#1a1a1a; --muted:#6b7280; --bg:#ffffff;
+          --card:#f6f7f9; --border:#e3e6ea; --accent:#2563eb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg:#e5e7eb; --muted:#9aa4b2; --bg:#0f1216; --card:#171b21; --border:#262c34; --accent:#60a5fa; } }
+  * { box-sizing: border-box; }
+  body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         margin:0; color:var(--fg); background:var(--bg); }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 24px 20px 64px; }
+  h1 { font-size: 18px; margin:.2em 0; word-break: break-all; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing:.05em; color:var(--muted);
+       margin: 28px 0 8px; }
+  .meta { color:var(--muted); font-size:13px; }
+  .pill { display:inline-block; padding:2px 9px; border-radius:999px; font-size:12px;
+          font-weight:600; border:1px solid var(--border); }
+  .run{color:#2563eb;border-color:#2563eb55} .ok{color:#16a34a;border-color:#16a34a55}
+  .warn{color:#d97706;border-color:#d9770655} .bad{color:#dc2626;border-color:#dc262655}
+  .muted{color:var(--muted)}
+  .grid { display:flex; flex-wrap:wrap; gap:10px; margin-top:12px; }
+  .stat { background:var(--card); border:1px solid var(--border); border-radius:10px;
+          padding:10px 14px; min-width:120px; }
+  .stat .k { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  .stat .v { font-size:16px; font-weight:600; margin-top:2px; }
+  pre { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:12px 14px;
+        white-space:pre-wrap; overflow-x:auto; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  td { padding:6px 8px; border-bottom:1px solid var(--border); vertical-align:top; }
+  td.r { color:var(--muted); width:2.5em; }
+  .badge { font-size:11px; font-weight:600; padding:1px 7px; border-radius:6px; border:1px solid; }
+  .badge.verified{color:#16a34a;border-color:#16a34a55} .badge.refuted{color:#dc2626;border-color:#dc262655}
+  .badge.unclear{color:#d97706;border-color:#d9770655}
+  a { color:var(--accent); }
+  textarea { width:100%; min-height:70px; border:1px solid var(--border); border-radius:10px;
+             padding:10px; background:var(--bg); color:var(--fg); font:inherit; }
+  button { margin-top:8px; padding:8px 16px; border:0; border-radius:8px; background:var(--accent);
+           color:#fff; font-weight:600; cursor:pointer; }
+  #msg { margin-left:10px; font-size:13px; color:var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="meta">agent-team job</div>
+  <h1>{{ID}}</h1>
+  <div><span class="pill {{STATUS_CLASS}}">{{STATUS}}</span>
+       <span class="meta">&nbsp;{{TYPE}} · {{KIND}} · round {{ROUND}}/{{ROUNDS}} · updated {{UPDATED}}</span></div>
+
+  <div class="grid">
+    <div class="stat"><div class="k">backend</div><div class="v">{{BACKEND}}</div></div>
+    <div class="stat"><div class="k">model</div><div class="v">{{MODEL}}</div></div>
+    <div class="stat"><div class="k">effort</div><div class="v">{{EFFORT}}</div></div>
+    <div class="stat"><div class="k">cost</div><div class="v">${{COST}}</div></div>
+    <div class="stat"><div class="k">tokens</div><div class="v">{{TOKENS}}<span class="meta"> / {{BUDGET}}</span></div></div>
+  </div>
+
+  <h2>Intent</h2>
+  <p>{{INTENT}}</p>
+
+  <h2>Deliverable</h2>
+  <p><a href="{{DELIVERABLE_PATH}}">{{DELIVERABLE_PATH}}</a></p>
+
+  <h2>Executable checks</h2>
+  <p class="{{CHECKS_CLASS}}">{{CHECKS}}</p>
+
+  <h2>Latest plan</h2>
+  <pre>{{PLAN}}</pre>
+
+  <h2>Verified state</h2>
+  <table><tbody>{{CLAIMS_ROWS}}</tbody></table>
+
+  <h2>Last verifier pass</h2>
+  <pre>{{VERIFIER}}</pre>
+
+  <h2>Add a direction</h2>
+  <p class="meta">Picked up on the next round/resume. Needs <code>job serve</code> running;
+     otherwise run <code>job say {{ID}} "..."</code>.</p>
+  <textarea id="box" placeholder="e.g. focus on the resonant channel; ignore the boundary term"></textarea>
+  <div><button onclick="send()">Inject</button><span id="msg"></span></div>
+</div>
+<script>
+  function send() {
+    var t = document.getElementById('box').value.trim();
+    if (!t) return;
+    var msg = document.getElementById('msg');
+    fetch('http://127.0.0.1:{{PORT}}/inject?job=' + encodeURIComponent('{{ID}}'), {
+      method: 'POST', headers: {'Content-Type': 'text/plain'}, body: t
+    }).then(function(r){ return r.ok ? r.text() : Promise.reject(r.status); })
+      .then(function(){ msg.textContent = 'queued ✓'; document.getElementById('box').value=''; })
+      .catch(function(e){ msg.textContent = 'no server — use: job say {{ID}} "..."'; });
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "name": "feature",
+  "description": "Add a feature to the project code; gated by review + tests, delivered as a diff.",
+  "kind": "code",
+  "workdir": "project",
+  "team": {
+    "lead": "pi",
+    "workers": ["worker"],
+    "verifier": "code-reviewer",
+    "extra": ["test-writer"]
+  },
+  "deliverable": { "type": "diff", "path": "out/changes.diff" },
+  "checks": { "command": "" },
+  "defaults": { "rounds": 4, "worker_count": 1, "budget_tokens": 300000 }
+}

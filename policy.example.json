@@ -1,0 +1,7 @@
+{
+  "_comment": "Optional bounds for PI-staffed (--pi) jobs. Copy to policy.json to activate. In v0.1 only max_workers is enforced (it clamps the PI's WORKERS request); the other keys are reserved and documented in the README.",
+  "backends_allowed": ["claude", "codex"],
+  "effort_max": "high",
+  "max_workers": 4,
+  "budget_tokens_max": 800000
+}

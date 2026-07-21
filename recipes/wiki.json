@@ -1,0 +1,15 @@
+{
+  "name": "wiki",
+  "description": "Build/ingest a wiki (html) with backlinks and an adversarial consistency audit.",
+  "kind": "understanding",
+  "workdir": "job",
+  "team": {
+    "lead": "pi",
+    "workers": ["worker"],
+    "verifier": "verifier",
+    "extra": ["writer"]
+  },
+  "deliverable": { "type": "html", "path": "out/wiki/index.html" },
+  "checks": { "command": "" },
+  "defaults": { "rounds": 4, "worker_count": 2, "budget_tokens": 300000 }
+}

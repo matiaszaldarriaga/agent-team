@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+"""agent-team launcher. Resolves the tool from its repo, runs jobs in the current project."""
+import os
+import sys
+
+_HOME = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+if _HOME not in sys.path:
+    sys.path.insert(0, _HOME)
+
+from agentteam.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

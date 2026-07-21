@@ -1,0 +1,15 @@
+{
+  "name": "derive",
+  "description": "Make a derivation; produce tex notes backed by an executable check suite.",
+  "kind": "understanding",
+  "workdir": "job",
+  "team": {
+    "lead": "pi",
+    "workers": ["worker"],
+    "verifier": "verifier",
+    "extra": ["writer"]
+  },
+  "deliverable": { "type": "tex", "path": "out/notes.tex" },
+  "checks": { "command": "if [ -f out/checks.py ]; then python out/checks.py; fi" },
+  "defaults": { "rounds": 6, "worker_count": 2, "budget_tokens": 400000 }
+}
