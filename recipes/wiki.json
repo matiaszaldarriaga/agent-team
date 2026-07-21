@@ -10,6 +10,7 @@
     "extra": ["writer"]
   },
   "deliverable": { "type": "html", "path": "out/wiki/index.html" },
-  "checks": { "command": "" },
+  "provenance": { "registry": "out/provenance.json" },
+  "checks": { "command": "python {TOOL}/bin/check_provenance.py out/wiki/index.html out/provenance.json" },
   "defaults": { "rounds": 4, "worker_count": 2, "budget_tokens": 300000 }
 }

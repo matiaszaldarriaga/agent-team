@@ -96,6 +96,23 @@ run → `state.json` + `view.html` update, cost logged. A claim becomes durable 
 only once the verifier confirms it — so nobody re-verifies it later (the "verified stays verified"
 rule). For a `derive` job, drop a `out/checks.py`; it's run every round as the verification spine.
 
+## Provenance: nothing is invented
+
+For deliverables you read (`derive`, `draft`, `wiki`), every important statement must trace to a
+recorded, reproducible place. The `writer` role keeps two artifacts in lockstep: the deliverable,
+and `out/provenance.json` — a registry mapping each tagged claim to *how to reproduce it*.
+
+- Tag claims in the deliverable: `\src{key}` (tex) or `[src:key]` (html/notebook).
+- Each key has a registry entry: `{statement, type, reproduce, detail}`, where `type` is
+  `check | script | data | source | derivation`. For `check`/`script`/`data`, `reproduce` is a
+  file path whose existence is enforced (an executable check is the strongest provenance).
+- `bin/check_provenance.py` runs as part of the check spine every round and **blocks `DONE`**
+  while any tag is unbacked or any entry lacks a reproduce pointer. A statement with no
+  reproducible backing is not written — it's recorded as an open point instead.
+
+For code (`feature`) the analogue is tests: a change isn't done until `test-writer` has it covered
+and passing.
+
 ## Staffing: you or the PI, same artifact
 
 A job's team is written either by you (flags) or by the PI (`--pi`) — both produce the same

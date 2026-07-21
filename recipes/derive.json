@@ -10,6 +10,7 @@
     "extra": ["writer"]
   },
   "deliverable": { "type": "tex", "path": "out/notes.tex" },
-  "checks": { "command": "if [ -f out/checks.py ]; then python out/checks.py; fi" },
+  "provenance": { "registry": "out/provenance.json" },
+  "checks": { "command": "python {TOOL}/bin/check_provenance.py out/notes.tex out/provenance.json && if [ -f out/checks.py ]; then python out/checks.py; fi" },
   "defaults": { "rounds": 6, "worker_count": 2, "budget_tokens": 400000 }
 }

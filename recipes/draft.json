@@ -10,6 +10,7 @@
     "extra": ["writer"]
   },
   "deliverable": { "type": "tex", "path": "out/draft.tex" },
-  "checks": { "command": "" },
+  "provenance": { "registry": "out/provenance.json" },
+  "checks": { "command": "python {TOOL}/bin/check_provenance.py out/draft.tex out/provenance.json" },
   "defaults": { "rounds": 4, "worker_count": 2, "budget_tokens": 300000 }
 }

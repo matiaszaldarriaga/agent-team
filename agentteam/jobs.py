@@ -101,6 +101,7 @@ class Job:
             "checks": {}, "inbox_cursor": 0,
         })
         job._seed_deliverable(recipe)
+        job._seed_provenance(recipe)
         return job
 
     def _seed_deliverable(self, recipe):
@@ -119,6 +120,16 @@ class Job:
         }.get(dtype, "")
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(seed)
+
+    def _seed_provenance(self, recipe):
+        prov = recipe.get("provenance")
+        if not prov:
+            return
+        reg = os.path.join(self.dir, prov["registry"])
+        os.makedirs(os.path.dirname(reg), exist_ok=True)
+        if not os.path.exists(reg):
+            with open(reg, "w", encoding="utf-8") as fh:
+                fh.write("{}\n")
 
     # --- spec / state IO ---
     def load_spec(self) -> dict:

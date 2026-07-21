@@ -249,6 +249,7 @@ def _run_checks(job, spec):
     cmd = (spec.get("checks") or {}).get("command", "")
     if not cmd:
         return {}
+    cmd = cmd.replace("{TOOL}", HOME).replace("{JOB}", job.dir)  # resolve tool/job paths
     try:
         proc = subprocess.run(cmd, cwd=job.dir, shell=True, capture_output=True,
                               text=True, timeout=600)
