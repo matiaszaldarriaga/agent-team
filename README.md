@@ -150,6 +150,12 @@ Bounded rounds only — **never a scheduler**. Every run has a round cap and a t
 `.stop` kill-switch checked each round, per-round cost logging, and explicit model/effort in the
 spec. Nothing here spawns background timers or self-restarts.
 
+**Spend vs. hang are separate concerns.** Spend is bounded by the **token budget + round count**,
+checked *between* rounds — so no in-flight work is ever thrown away. A per-call timeout is only a
+*hang* backstop: by default an **idle** timeout (`--idle-timeout`, 1800s) kills a call only after
+that long with **no output and no file writes** (a working call is never killed), and it salvages
+the partial report. A hard wall-clock `--timeout` is **off** by default.
+
 ## Docs, tests, license
 
 - **`docs/DESIGN.md`** — why the tool is shaped this way (the rationale and the decisions).

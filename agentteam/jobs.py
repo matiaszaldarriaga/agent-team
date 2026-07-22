@@ -66,7 +66,8 @@ class Job:
     # --- creation ---
     @classmethod
     def create(cls, *, job_type, intent, backend, model, effort, rounds=None,
-               budget_tokens=None, worker_count=None, name=None) -> "Job":
+               budget_tokens=None, worker_count=None, name=None,
+               timeout=None, idle_timeout=None) -> "Job":
         recipe = recipes_mod.load(job_type)
         d = recipe["defaults"]
         stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
@@ -86,6 +87,8 @@ class Job:
             "rounds": rounds if rounds is not None else d["rounds"],
             "worker_count": worker_count if worker_count is not None else d["worker_count"],
             "budget_tokens": budget_tokens if budget_tokens is not None else d["budget_tokens"],
+            "timeout": timeout,            # hard per-call wall-clock ceiling; None = off
+            "idle_timeout": idle_timeout,  # None = backend default (1800s); 0 = off
             "team": recipe["team"],
             "kind": recipe["kind"],
             "deliverable": recipe["deliverable"],

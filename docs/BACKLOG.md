@@ -30,16 +30,9 @@ run started correctly without inspecting processes. Want:
 `codex` reports tokens but no dollar cost (shows `$0.000`). Add a per-model token→$ rate table and
 display an **estimated** cost next to tokens (for all backends; codex especially). Label it "est."
 
-### 4. Per-call timeout: too short + discards the report on kill  — HIGH (bit us live)
-`CALL_TIMEOUT=2400` (40 min) killed an xhigh codex worker mid-derivation (first real run,
-round 2). Two fixes:
-- **Raise + make configurable** per job (`--timeout`); xhigh codex with heavy tool use can
-  legitimately run > 40 min.
-- **Salvage partial output on timeout.** Today `subprocess.run(timeout=...)` discards the killed
-  process's stdout, so the agent's final report is lost (though the FILES it wrote to disk
-  survive). Instead, stream codex `--json` to a file during the run and, on timeout, parse the
-  last `agent_message` from the partial stream so the worker's latest synthesis is recovered, not
-  thrown away. (Files-on-disk already persist; this recovers the *report*.)
+### 4. Per-call timeout: too short + discards the report on kill  — ✅ DONE (see Done section)
+`CALL_TIMEOUT=2400` (40 min) killed an xhigh codex worker mid-derivation (first real run).
+Reframed: spend is the budget's job (lossless); a timeout is only a *hang* backstop.
 
 ### 5. Token budget vs. xhigh-codex reality  — HIGH
 First real run burned **13.7M tokens in round 1** (one xhigh codex `exec` is an agentic loop —
@@ -53,6 +46,13 @@ budgets, mid-round budget checks, and surface the projected spend up front.
 (which can be a preamble). Could skip obvious preface lines or summarize. Minor.
 
 ## Done
+- **Idle-backstop timeouts + salvage** — replaced the aggressive 40-min hard timeout. Spend is
+  now bounded only by the token budget + round count (lossless). The backend streams stdout/stderr
+  and kills a call ONLY after `idle_timeout` (default 1800s) of **no output AND no file writes**
+  — a working call that reads/runs/writes is never killed. A hard wall-clock `--timeout` is off by
+  default (`--idle-timeout` also configurable, 0 disables). On any kill the partial report is
+  salvaged from the stream (files on disk already persisted). Verified with fake processes:
+  idle-kill, file-activity-keeps-alive, hard-timeout, and salvage.
 - **Liveness / heartbeat** — the engine writes a phase + timestamp each step (`planning` /
   `workers running` / `verifying` / `writing` / `checks`) and re-renders, so the view updates
   mid-round. `view.html` shows the phase in the "updated" line; `job status` marks a live run with

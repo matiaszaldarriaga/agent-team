@@ -52,6 +52,10 @@ def main(argv=None):
     sp.add_argument("--workers", type=int, default=None)
     sp.add_argument("--budget", type=int, default=None, help="token budget")
     sp.add_argument("--name", default=None, help="short name for the job id (else derived from intent)")
+    sp.add_argument("--timeout", type=int, default=None,
+                    help="hard per-call wall-clock seconds (default: off)")
+    sp.add_argument("--idle-timeout", type=int, default=None,
+                    help="kill a call after N s of no output AND no file writes (default 1800; 0 off)")
 
     for name in ("run", "resume"):
         q = sub.add_parser(name)
@@ -137,7 +141,8 @@ def _cmd_new(args):
     effort = args.effort if args.effort is not None else d["effort"]
     job = Job.create(job_type=args.type, intent=_read_intent(args.intent), backend=args.backend,
                      model=model, effort=effort, rounds=args.rounds,
-                     budget_tokens=args.budget, worker_count=args.workers, name=args.name)
+                     budget_tokens=args.budget, worker_count=args.workers, name=args.name,
+                     timeout=args.timeout, idle_timeout=args.idle_timeout)
     from . import render
     render.render(job)
     print(f"created {job.id}")
