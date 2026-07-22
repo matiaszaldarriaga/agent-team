@@ -30,10 +30,16 @@ run started correctly without inspecting processes. Want:
 `codex` reports tokens but no dollar cost (shows `$0.000`). Add a per-model token→$ rate table and
 display an **estimated** cost next to tokens (for all backends; codex especially). Label it "est."
 
-### 4. Per-call timeout too short for xhigh codex  — HIGH (bit us live)
+### 4. Per-call timeout: too short + discards the report on kill  — HIGH (bit us live)
 `CALL_TIMEOUT=2400` (40 min) killed an xhigh codex worker mid-derivation (first real run,
-round 2). Make it configurable per job (`--timeout`) and raise the default (xhigh codex doing
-heavy tool use can legitimately run > 40 min). Consider a warn-and-continue vs. hard-kill policy.
+round 2). Two fixes:
+- **Raise + make configurable** per job (`--timeout`); xhigh codex with heavy tool use can
+  legitimately run > 40 min.
+- **Salvage partial output on timeout.** Today `subprocess.run(timeout=...)` discards the killed
+  process's stdout, so the agent's final report is lost (though the FILES it wrote to disk
+  survive). Instead, stream codex `--json` to a file during the run and, on timeout, parse the
+  last `agent_message` from the partial stream so the worker's latest synthesis is recovered, not
+  thrown away. (Files-on-disk already persist; this recovers the *report*.)
 
 ### 5. Token budget vs. xhigh-codex reality  — HIGH
 First real run burned **13.7M tokens in round 1** (one xhigh codex `exec` is an agentic loop —
