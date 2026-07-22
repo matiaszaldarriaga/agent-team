@@ -148,3 +148,9 @@ rest is reserved.
 Bounded rounds only — **never a scheduler**. Every run has a round cap and a token budget, a
 `.stop` kill-switch checked each round, per-round cost logging, and explicit model/effort in the
 spec. Nothing here spawns background timers or self-restarts.
+
+## Docs, tests, license
+
+- **`docs/DESIGN.md`** — why the tool is shaped this way (the rationale and the decisions).
+- **Tests** — `python -m unittest discover -s tests` (zero-dependency; uses the `mock` backend).
+- **License** — MIT (`LICENSE`).
