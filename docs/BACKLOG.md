@@ -16,14 +16,27 @@ Want (Matias's original idea): differentiate per role — e.g. a cheaper model f
 Sketch: recipes declare optional per-role `{model, effort, backend}`; PI staffing may set them
 within the policy ceiling; `_run_role` reads the role's override, falling back to the job default.
 
-### 2. Codex dollar-cost reporting  — LOW
-`codex` (unlike `claude`) doesn't emit `total_cost_usd`, so `cost_usd` shows `$0.000` while
-`tokens` is tracked correctly. Options: a token→cost estimate table per model, or just surface
-tokens as the codex meter and hide the dollar field for codex. Tokens suffice for now.
+### 2. Liveness / "is it going?" signal  — HIGH
+Mid-round the on-disk state only updates at each round's **END**, so `view.html` and `job status`
+look frozen while workers are actually running (xhigh calls take minutes) — you can't confirm a
+run started correctly without inspecting processes. Want:
+- the engine writes a **heartbeat each step** (not just each round): a timestamp + current phase
+  (`"round 2 · workers(2) running"` / `"verifier"` / `"writing"` / `"checks"`);
+- `view.html` shows a **live badge** (`● live — updated 8s ago` vs `stale`);
+- `job status` (or a new `job watch`) reports the phase, last-activity age, and whether the runner
+  process is alive.
 
-### 3. Smarter auto-slug  — LOW
+### 3. Rough token→$ money estimate  — requested (minor)
+`codex` reports tokens but no dollar cost (shows `$0.000`). Add a per-model token→$ rate table and
+display an **estimated** cost next to tokens (for all backends; codex especially). Label it "est."
+
+### 4. Smarter auto-slug  — LOW
 `--name` now lets you set the job id, but the auto-slug still scrapes the intent's first words
 (which can be a preamble). Could skip obvious preface lines or summarize. Minor.
+
+## Done
+- **Intent box rendering** — was a `<p>` (collapsed newlines into a wall of text); now a
+  `<pre class="intent">` so line breaks show and it scrolls if long.
 
 ## Deferred by design (see docs/DESIGN.md)
 - Shared cross-job **project corpus** (verified results shared across jobs) — optional layer.

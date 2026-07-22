@@ -30,6 +30,7 @@
   .stat .v { font-size:16px; font-weight:600; margin-top:2px; }
   pre { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:12px 14px;
         white-space:pre-wrap; overflow-x:auto; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  pre.intent { max-height: 220px; overflow:auto; }
   table { width:100%; border-collapse:collapse; font-size:13px; }
   td { padding:6px 8px; border-bottom:1px solid var(--border); vertical-align:top; }
   td.r { color:var(--muted); width:2.5em; }
@@ -60,7 +61,7 @@
   </div>
 
   <h2>Intent</h2>
-  <p>{{INTENT}}</p>
+  <pre class="intent">{{INTENT}}</pre>
 
   <h2>Deliverable</h2>
   <p><a href="{{DELIVERABLE_PATH}}">{{DELIVERABLE_PATH}}</a></p>
