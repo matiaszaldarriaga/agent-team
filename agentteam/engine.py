@@ -24,6 +24,10 @@ import subprocess
 from . import HOME, backends, render, roles
 from .jobs import Job, project_root
 
+# Per-call wall-clock ceiling so one hung backend call can't stall an unattended run.
+# Generous enough for xhigh reasoning on hard problems; a hit is logged and the round continues.
+CALL_TIMEOUT = 2400
+
 
 def _load_policy() -> dict:
     """Bounds for PI-staffed jobs, from policy.json next to the tool (optional)."""
@@ -168,7 +172,7 @@ def _run_parallel(job, spec, role, state, directions, extras):
 def _run_role(job, spec, role_name, label, state, directions, extra_task) -> backends.AgentResult:
     prompt = _build_prompt(job, spec, role_name, state, directions, extra_task)
     res = backends.run_agent(prompt, backend=spec["backend"], model=spec.get("model"),
-                             effort=spec.get("effort"), cwd=job.dir)
+                             effort=spec.get("effort"), cwd=job.dir, timeout=CALL_TIMEOUT)
     if not res.ok:
         job.log({"event": "agent_error", "role": label, "error": res.error})
     return res
