@@ -20,9 +20,20 @@ import json
 import os
 import re
 import subprocess
+from datetime import datetime
 
 from . import HOME, backends, render, roles
 from .jobs import Job, project_root
+
+
+def _beat(job, spec, state, phase):
+    """Heartbeat: record the current phase + timestamp and re-render, so the view (and
+    `job status`/`job watch`) show live progress mid-round, not just at each round's end."""
+    state["phase"] = phase
+    state["heartbeat_ts"] = datetime.now().isoformat(timespec="seconds")
+    job.save_state(state)
+    job.save_spec(spec)
+    render.render(job)
 
 # Per-call wall-clock ceiling so one hung backend call can't stall an unattended run.
 # Generous enough for xhigh reasoning on hard problems; a hit is logged and the round continues.
@@ -75,6 +86,7 @@ def run(job: Job, *, max_new_rounds: int | None = None) -> str:
     job.clear_stop()
     spec["status"] = "running"
     job.save_spec(spec)
+    job.write_pid()
 
     start = spec.get("round", 0)
     hard_limit = spec["rounds"]
@@ -95,6 +107,7 @@ def run(job: Job, *, max_new_rounds: int | None = None) -> str:
         state = job.load_state()
         directions = job.drain_inbox(state)
         round_results = []
+        _beat(job, spec, state, f"round {r} · planning")
 
         # 1-2. lead plans
         lead = spec["team"]["lead"]
@@ -105,6 +118,7 @@ def run(job: Job, *, max_new_rounds: int | None = None) -> str:
         round_results.append(lead_res)
         state["plan"] = lead_res.text
         tasks = _parse_tasks(lead_res.text, spec["worker_count"])
+        _beat(job, spec, state, f"round {r} · workers ({len(tasks)}) running")
 
         # 3. workers in parallel
         worker_role = spec["team"]["workers"][0]
@@ -114,6 +128,7 @@ def run(job: Job, *, max_new_rounds: int | None = None) -> str:
         round_results.extend(worker_results)
 
         # 4. verifier -- independent, adversarial
+        _beat(job, spec, state, f"round {r} · verifying")
         claims_blob = "\n\n".join(f"[worker-{i+1}] {wr.text}" for i, wr in enumerate(worker_results))
         ver_res = _run_role(job, spec, spec["team"]["verifier"], "verifier", state, directions,
                             "Independently verify each worker claim below. Do NOT trust it -- "
@@ -124,6 +139,7 @@ def run(job: Job, *, max_new_rounds: int | None = None) -> str:
 
         # 5. extras (writer updates deliverable, test-writer, ...)
         for extra_role in spec["team"].get("extra", []):
+            _beat(job, spec, state, f"round {r} · {extra_role}")
             ex_res = _run_role(job, spec, extra_role, extra_role, state, directions,
                                _extra_task(extra_role, spec))
             round_results.append(ex_res)
@@ -132,6 +148,7 @@ def run(job: Job, *, max_new_rounds: int | None = None) -> str:
         _record_round(state, r, worker_results, ver_res)
 
         # 6. executable checks
+        _beat(job, spec, state, f"round {r} · checks")
         state["checks"] = _run_checks(job, spec)
 
         # 7. persist + render + log
@@ -150,7 +167,11 @@ def run(job: Job, *, max_new_rounds: int | None = None) -> str:
         spec["status"] = "stopped"  # hit the round limit without a DONE
 
     _finalize_deliverable(job, spec)
+    final_state = job.load_state()
+    final_state["phase"] = spec["status"]          # terminal phase shown in the view
+    job.save_state(final_state)
     job.save_spec(spec)
+    job.clear_pid()                                 # process is finishing -> not running
     render.render(job)
     return spec["status"]
 

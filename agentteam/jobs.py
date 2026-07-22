@@ -187,6 +187,30 @@ class Job:
         if os.path.exists(self.stop_path):
             os.unlink(self.stop_path)
 
+    # --- liveness (a runner writes its pid; is_running verifies the process is alive) ---
+    @property
+    def pid_path(self):
+        return os.path.join(self.dir, "job.pid")
+
+    def write_pid(self):
+        with open(self.pid_path, "w") as fh:
+            fh.write(str(os.getpid()))
+
+    def clear_pid(self):
+        if os.path.exists(self.pid_path):
+            os.unlink(self.pid_path)
+
+    def is_running(self) -> bool:
+        try:
+            pid = int(open(self.pid_path).read().strip())
+        except (OSError, ValueError):
+            return False
+        try:
+            os.kill(pid, 0)  # signal 0: existence check, doesn't actually signal
+        except OSError:
+            return False  # stale pid file (process gone) -> not running
+        return True
+
     def set_status(self, status: str):
         assert status in STATUSES, status
         spec = self.load_spec()

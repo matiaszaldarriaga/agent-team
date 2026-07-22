@@ -73,7 +73,8 @@ job resume <id> --say "..." [--rounds N]     inject a direction and continue whe
 job say <id> "..."                           queue a direction (or use the HTML inject box)
 job stop <id>                                kill-switch (checked each round)
 job freeze <id> | abandon <id>               keep it / mark dead-end — its subtree stays as a record
-job status [<id>]                            list jobs / dump one spec
+job status [<id>]                            list jobs / dump one spec (● = live run + phase)
+job watch <id>                               live-poll a job's phase until it ends
 job serve [--port 8757]                      HTML monitor + inject server for all jobs
 job roles | recipes                          list the installed cast / job types
 ```

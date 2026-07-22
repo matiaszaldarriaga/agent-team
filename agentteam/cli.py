@@ -8,7 +8,8 @@
   job stop <id>                    request the kill-switch
   job freeze <id>                  mark done/kept (you weave it in later, in a session)
   job abandon <id>                 mark dead-end; left as a record
-  job status [<id>]                list jobs / show one
+  job status [<id>]                list jobs / show one (● marks a live run + its phase)
+  job watch <id>                   live-poll a job's phase/status until it ends
   job serve [--port N]             start the HTML monitor + inject server
   job roles | recipes              list the installed cast / job types
 """
@@ -18,6 +19,8 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
+from datetime import datetime
 
 from . import __version__, recipes as recipes_mod, roles as roles_mod
 from . import engine
@@ -64,6 +67,8 @@ def main(argv=None):
     q = sub.add_parser("staff"); q.add_argument("id")
     q = sub.add_parser("say"); q.add_argument("id"); q.add_argument("text")
     q = sub.add_parser("status"); q.add_argument("id", nargs="?")
+    q = sub.add_parser("watch"); q.add_argument("id")
+    q.add_argument("--interval", type=int, default=5, help="poll seconds (default 5)")
     q = sub.add_parser("serve"); q.add_argument("--port", type=int, default=None)
     sub.add_parser("roles")
     sub.add_parser("recipes")
@@ -101,6 +106,8 @@ def _dispatch(args):
         return 0
     if args.cmd == "status":
         return _cmd_status(args)
+    if args.cmd == "watch":
+        return _cmd_watch(args)
     if args.cmd == "serve":
         from . import serve as serve_mod
         from .render import DEFAULT_PORT
@@ -181,15 +188,45 @@ def _cmd_status(args):
     if not jobs:
         print("no jobs yet.  create one:  job new derive \"...\"")
         return 0
-    print(f"{'STATUS':10s} {'ROUND':7s} {'COST':>8s}  JOB")
+    print(f"{'':2s}{'STATUS':10s} {'ROUND':7s} {'TOKENS':>10s}  JOB")
     for job in jobs:
         try:
             s = job.load_spec()
         except OSError:
             continue
-        print(f"{s.get('status',''):10s} {str(s.get('round',0))+'/'+str(s.get('rounds',0)):7s} "
-              f"${s.get('cost_usd',0.0):>7.3f}  {job.id}")
+        live = "●" if job.is_running() else " "
+        phase = ""
+        if live == "●":
+            try:
+                phase = "  " + job.load_state().get("phase", "")
+            except OSError:
+                pass
+        print(f"{live} {s.get('status',''):10s} "
+              f"{str(s.get('round', 0)) + '/' + str(s.get('rounds', 0)):7s} "
+              f"{s.get('tokens', 0):>10,}  {job.id}{phase}")
     return 0
+
+
+def _cmd_watch(args):
+    job = _need(args.id)
+    print(f"watching {args.id}  (Ctrl-C to stop; the job is unaffected)")
+    try:
+        while True:
+            spec, state = job.load_spec(), job.load_state()
+            alive = job.is_running()
+            phase = state.get("phase", "") if alive else ""
+            mark = "● live" if alive else "○ idle"
+            print(f"  {datetime.now():%H:%M:%S}  {mark}  {spec['status']:8s}  "
+                  f"round {spec['round']}/{spec['rounds']}  tok {spec['tokens']:,}  {phase}")
+            terminal = spec["status"] in ("done", "frozen", "abandoned") or \
+                (spec["status"] == "stopped" and not alive)
+            if terminal:
+                print(f"  -> {spec['status']}")
+                return 0
+            time.sleep(max(1, args.interval))
+    except KeyboardInterrupt:
+        print("\n(stopped watching)")
+        return 0
 
 
 def _need(job_id) -> Job:

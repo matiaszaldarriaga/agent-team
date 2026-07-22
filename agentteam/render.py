@@ -65,13 +65,23 @@ def render(job) -> None:
         "VERIFIER": html.escape(last_verifier or "(no verifier output yet)"),
         "DELIVERABLE_PATH": html.escape(spec.get("deliverable", {}).get("path", "")),
         "PORT": str(DEFAULT_PORT),
-        "UPDATED": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "UPDATED": _updated_str(spec, state),
     }
     out = tmpl
     for key, val in values.items():
         out = out.replace("{{" + key + "}}", val)
     with open(job.view_path, "w", encoding="utf-8") as fh:
         fh.write(out)
+
+
+def _updated_str(spec, state):
+    """Render time, plus the live phase when the job is running (folded into one placeholder,
+    so no template change is needed)."""
+    stamp = datetime.now().strftime("%H:%M:%S")
+    phase = state.get("phase")
+    if spec.get("status") == "running" and phase:
+        return f"{stamp}  ·  {phase}"
+    return stamp
 
 
 def _status_class(status):

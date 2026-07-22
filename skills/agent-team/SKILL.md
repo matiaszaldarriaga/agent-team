@@ -35,7 +35,8 @@ job status            # existing jobs and their <id>
 job new derive "@intent.txt" --pi --backend codex --model gpt-5.6-sol --effort xhigh --rounds 3
 job staff <id>        # (optional) PI plans + sizes the team — 1 call; show the user its decision
 job run <id>          # run the rounds (spend!) — run in the background for long jobs
-# monitor: open jobs/<id>/view.html (auto-refresh) or `job serve`; steer: job say <id> "..."
+# monitor: job status (● = live + phase) · job watch <id> · jobs/<id>/view.html · job serve
+# steer:   job say <id> "..."
 job resume <id> --say "focus on the resonant channel"
 job freeze <id>       # keep it (weave into the project later)  |  job abandon <id>
 ```

@@ -16,7 +16,7 @@ Want (Matias's original idea): differentiate per role — e.g. a cheaper model f
 Sketch: recipes declare optional per-role `{model, effort, backend}`; PI staffing may set them
 within the policy ceiling; `_run_role` reads the role's override, falling back to the job default.
 
-### 2. Liveness / "is it going?" signal  — HIGH
+### 2. Liveness / "is it going?" signal  — ✅ DONE (see Done section)
 Mid-round the on-disk state only updates at each round's **END**, so `view.html` and `job status`
 look frozen while workers are actually running (xhigh calls take minutes) — you can't confirm a
 run started correctly without inspecting processes. Want:
@@ -35,6 +35,11 @@ display an **estimated** cost next to tokens (for all backends; codex especially
 (which can be a preamble). Could skip obvious preface lines or summarize. Minor.
 
 ## Done
+- **Liveness / heartbeat** — the engine writes a phase + timestamp each step (`planning` /
+  `workers running` / `verifying` / `writing` / `checks`) and re-renders, so the view updates
+  mid-round. `view.html` shows the phase in the "updated" line; `job status` marks a live run with
+  `●` + phase; a PID file + `is_running()` back it; new **`job watch <id>`** live-polls until the
+  job ends. (Applies to runs started after this change — a run already in progress uses the old code.)
 - **Intent box rendering** — was a `<p>` (collapsed newlines into a wall of text); now a
   `<pre class="intent">` so line breaks show and it scrolls if long.
 
