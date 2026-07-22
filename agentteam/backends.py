@@ -88,8 +88,8 @@ def _run_codex(prompt, *, model, effort, cwd, timeout) -> AgentResult:
     if model:
         cmd += ["--model", model]
     if effort:
-        cmd += ["-c", f"model_reasoning_effort={effort}"]
-    cmd += ["--sandbox", "danger-full-access", "-c", "approval_policy=never",
+        cmd += ["-c", f'model_reasoning_effort="{effort}"']  # quoted so codex parses it as TOML
+    cmd += ["--sandbox", "danger-full-access", "-c", 'approval_policy="never"',
             "--json", "--output-last-message", last_path, prompt]
     try:
         proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)

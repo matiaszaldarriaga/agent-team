@@ -25,7 +25,7 @@ from .jobs import Job, list_jobs
 # Backend defaults. Model/effort are recorded in every spec and shown in the view for provenance.
 BACKEND_DEFAULTS = {
     "claude": {"model": "claude-opus-4-8[1m]", "effort": "high"},
-    "codex": {"model": "gpt-5.5", "effort": "high"},
+    "codex": {"model": "gpt-5.6-sol", "effort": "xhigh"},
     "mock": {"model": None, "effort": None},
 }
 
