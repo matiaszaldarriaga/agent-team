@@ -30,7 +30,19 @@ run started correctly without inspecting processes. Want:
 `codex` reports tokens but no dollar cost (shows `$0.000`). Add a per-model token→$ rate table and
 display an **estimated** cost next to tokens (for all backends; codex especially). Label it "est."
 
-### 4. Smarter auto-slug  — LOW
+### 4. Per-call timeout too short for xhigh codex  — HIGH (bit us live)
+`CALL_TIMEOUT=2400` (40 min) killed an xhigh codex worker mid-derivation (first real run,
+round 2). Make it configurable per job (`--timeout`) and raise the default (xhigh codex doing
+heavy tool use can legitimately run > 40 min). Consider a warn-and-continue vs. hard-kill policy.
+
+### 5. Token budget vs. xhigh-codex reality  — HIGH
+First real run burned **13.7M tokens in round 1** (one xhigh codex `exec` is an agentic loop —
+~2–3M tokens/call with file reads + running oracles). A 3-round derive ≈ 30–40M tokens. The
+budget guard only checks at round *boundaries*, so it overshoots within a round and a "safety"
+20M cap silently cut the run to ~2 rounds. Options: much larger default budgets, per-round
+budgets, mid-round budget checks, and surface the projected spend up front.
+
+### 6. Smarter auto-slug  — LOW
 `--name` now lets you set the job id, but the auto-slug still scrapes the intent's first words
 (which can be a preamble). Could skip obvious preface lines or summarize. Minor.
 
