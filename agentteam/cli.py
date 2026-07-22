@@ -48,6 +48,7 @@ def main(argv=None):
     sp.add_argument("--rounds", type=int, default=None)
     sp.add_argument("--workers", type=int, default=None)
     sp.add_argument("--budget", type=int, default=None, help="token budget")
+    sp.add_argument("--name", default=None, help="short name for the job id (else derived from intent)")
 
     for name in ("run", "resume"):
         q = sub.add_parser(name)
@@ -129,7 +130,7 @@ def _cmd_new(args):
     effort = args.effort if args.effort is not None else d["effort"]
     job = Job.create(job_type=args.type, intent=_read_intent(args.intent), backend=args.backend,
                      model=model, effort=effort, rounds=args.rounds,
-                     budget_tokens=args.budget, worker_count=args.workers)
+                     budget_tokens=args.budget, worker_count=args.workers, name=args.name)
     from . import render
     render.render(job)
     print(f"created {job.id}")

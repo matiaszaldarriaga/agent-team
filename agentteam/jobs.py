@@ -66,11 +66,12 @@ class Job:
     # --- creation ---
     @classmethod
     def create(cls, *, job_type, intent, backend, model, effort, rounds=None,
-               budget_tokens=None, worker_count=None) -> "Job":
+               budget_tokens=None, worker_count=None, name=None) -> "Job":
         recipe = recipes_mod.load(job_type)
         d = recipe["defaults"]
         stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        job_id = f"{stamp}_{job_type}-{_slug(intent)}"
+        slug = _slug(name, n=8) if name else _slug(intent)  # --name overrides the intent-derived slug
+        job_id = f"{stamp}_{job_type}-{slug}"
         job = cls(job_id)
         os.makedirs(job.work_dir, exist_ok=True)
         os.makedirs(job.out_dir, exist_ok=True)
