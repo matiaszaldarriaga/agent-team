@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from . import __version__, recipes as recipes_mod, roles as roles_mod
@@ -107,11 +108,19 @@ def _dispatch(args):
     return 1
 
 
+def _read_intent(intent):
+    """Intent text, or the contents of a file if given as @path (handy for long LaTeX intents)."""
+    if intent.startswith("@"):
+        with open(os.path.expanduser(intent[1:]), encoding="utf-8") as fh:
+            return fh.read().strip()
+    return intent
+
+
 def _cmd_new(args):
     d = BACKEND_DEFAULTS[args.backend]
     model = args.model if args.model is not None else d["model"]
     effort = args.effort if args.effort is not None else d["effort"]
-    job = Job.create(job_type=args.type, intent=args.intent, backend=args.backend,
+    job = Job.create(job_type=args.type, intent=_read_intent(args.intent), backend=args.backend,
                      model=model, effort=effort, rounds=args.rounds,
                      budget_tokens=args.budget, worker_count=args.workers)
     from . import render

@@ -59,7 +59,8 @@ def _run_claude(prompt, *, model, effort, cwd, timeout) -> AgentResult:
         cmd += ["--effort", effort]
     cmd += ["--output-format", "json", "-p", prompt, "--dangerously-skip-permissions"]
     try:
-        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
+                              stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         return AgentResult(backend="claude", ok=False, error=f"timed out after {timeout}s")
     if proc.returncode != 0 and not proc.stdout.strip():
@@ -84,7 +85,7 @@ def _run_codex(prompt, *, model, effort, cwd, timeout) -> AgentResult:
         return AgentResult(backend="codex", ok=False, error="`codex` CLI not found on PATH")
     fd, last_path = tempfile.mkstemp(suffix=".txt", prefix="codex_last_")
     os.close(fd)
-    cmd = ["codex", "exec"]
+    cmd = ["codex", "exec", "--skip-git-repo-check"]
     if model:
         cmd += ["--model", model]
     if effort:
@@ -92,7 +93,8 @@ def _run_codex(prompt, *, model, effort, cwd, timeout) -> AgentResult:
     cmd += ["--sandbox", "danger-full-access", "-c", 'approval_policy="never"',
             "--json", "--output-last-message", last_path, prompt]
     try:
-        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
+                              stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         _safe_unlink(last_path)
         return AgentResult(backend="codex", ok=False, error=f"timed out after {timeout}s")
