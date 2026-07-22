@@ -27,11 +27,19 @@ The verifier is a permanent member of every team: for math it's `verifier`, for 
 
 ```sh
 git clone git@github.com:matiaszaldarriaga/agent-team.git
-# then put the launcher on your PATH, e.g.:
-ln -s "$PWD/agent-team/bin/job" ~/bin/job     # or: export PATH="$PWD/agent-team/bin:$PATH"
+cd agent-team && ./install.sh          # one-time; re-run after `git pull`
 ```
 
-Run `job` from inside whatever project you're working on. Jobs are created in `./jobs/` there;
+`install.sh` wires the **three consumers** of the tool:
+- **you** → `job` symlinked onto your PATH (`~/bin`), runnable from any shell;
+- **Claude** → the `agent-team` skill into `~/.claude/skills/`, discovered by every Claude session;
+- **Codex** → the same skill into `~/.codex/skills/`, discovered by every Codex session.
+
+Claude and Codex share the **Agent Skills** format, so one `SKILL.md` (`skills/agent-team/`) serves
+both. Everything is symlinked, so `git pull` updates it in place. Cloning alone does none of this —
+without the skill, a fresh Claude/Codex session has no idea the tool exists.
+
+Run `job` from inside whatever project you're working on — jobs are created in `./jobs/` there;
 the tool code stays in the cloned repo. (Point elsewhere with `AGENT_TEAM_PROJECT` /
 `AGENT_TEAM_JOBS`.)
 
