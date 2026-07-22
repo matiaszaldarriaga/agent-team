@@ -60,6 +60,7 @@ def main(argv=None):
         q = sub.add_parser(name)
         q.add_argument("id")
 
+    q = sub.add_parser("staff"); q.add_argument("id")
     q = sub.add_parser("say"); q.add_argument("id"); q.add_argument("text")
     q = sub.add_parser("status"); q.add_argument("id", nargs="?")
     q = sub.add_parser("serve"); q.add_argument("--port", type=int, default=None)
@@ -78,6 +79,12 @@ def _dispatch(args):
         return _cmd_new(args)
     if args.cmd in ("run", "resume"):
         return _cmd_run(args)
+    if args.cmd == "staff":
+        job = _need(args.id)
+        engine.staff_with_pi(job)
+        print(f"{args.id}: staffed (worker_count={job.load_spec()['worker_count']})")
+        print("--- PI plan ---\n" + (job.load_state().get("plan", "")[:2000]))
+        return 0
     if args.cmd == "say":
         _need(args.id).say(args.text)
         print(f"queued for {args.id}")
