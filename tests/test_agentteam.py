@@ -35,6 +35,21 @@ class RecipesAndRoles(unittest.TestCase):
             {"pi", "worker", "verifier", "code-reviewer", "test-writer", "writer"},
         )
 
+    def test_every_recipe_has_a_check_spine_and_a_provenance_registry(self):
+        """A deliverable nobody can retrace is not a deliverable -- including for code jobs."""
+        for name in recipes.available():
+            r = recipes.load(name)
+            self.assertTrue(r["checks"]["command"].strip(), f"{name} has no check spine")
+            self.assertTrue(r.get("provenance", {}).get("registry"), f"{name} seeds no registry")
+
+    def test_feature_recipe_authors_human_readable_notes(self):
+        """The writer role authors `deliverable.path`, so a code job's deliverable must be tex."""
+        r = recipes.load("feature")
+        self.assertEqual(r["deliverable"]["type"], "tex")
+        self.assertIn("writer", r["team"]["extra"])
+        self.assertIn("test-writer", r["team"]["extra"])
+        self.assertEqual(r["team"]["verifier"], "code-reviewer")
+
     def test_verifierless_recipe_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             bad = os.path.join(d, "bad.json")
@@ -210,6 +225,36 @@ class Lifecycle(unittest.TestCase):
         # freeze is terminal state
         job.set_status("frozen")
         self.assertEqual(job.load_spec()["status"], "frozen")
+
+    def test_code_job_change_set_captures_new_files(self):
+        """A feature job's output is mostly *new* files, which a bare `git diff` never shows."""
+        def git(*args):
+            subprocess.run(["git", *args], cwd=self._tmp, capture_output=True, check=True)
+
+        git("init", "-q")
+        git("config", "user.email", "t@example.com")
+        git("config", "user.name", "test")
+        with open(os.path.join(self._tmp, "existing.py"), "w") as fh:
+            fh.write("x = 1\n")
+        git("add", "-A")
+        git("commit", "-qm", "base")
+
+        job = Job.create(job_type="feature", intent="add a module", backend="mock",
+                         model=None, effort=None, rounds=1)
+        self.assertTrue(job.load_spec()["base_commit"], "code job must anchor to a commit")
+
+        # what a worker would leave behind: one new file, one edit
+        with open(os.path.join(self._tmp, "brand_new.py"), "w") as fh:
+            fh.write("def added():\n    return 42\n")
+        with open(os.path.join(self._tmp, "existing.py"), "w") as fh:
+            fh.write("x = 2\n")
+
+        engine._finalize_deliverable(job, job.load_spec())
+        with open(os.path.join(job.out_dir, "changes.diff")) as fh:
+            diff = fh.read()
+        self.assertIn("brand_new.py", diff)   # the new file is the point
+        self.assertIn("existing.py", diff)
+        self.assertTrue(os.path.exists(os.path.join(job.dir, "out/notes.tex")))
 
     def test_per_role_config_and_schedule_end_to_end(self):
         """A `when: last` writer costs one hand-off, not one per round; per-role effort

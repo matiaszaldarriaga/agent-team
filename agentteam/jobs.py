@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import threading
 from datetime import datetime
 
@@ -36,6 +37,20 @@ def project_root() -> str:
 
 def jobs_root() -> str:
     return os.environ.get("AGENT_TEAM_JOBS", os.path.join(project_root(), "jobs"))
+
+
+def git_head() -> str | None:
+    """The project's current commit, or None if it isn't a git repo.
+
+    Recorded as a code job's ``base_commit`` so the change set it produces has a fixed anchor
+    (and the human an exact point to roll back to).
+    """
+    try:
+        proc = subprocess.run(["git", "rev-parse", "HEAD"], cwd=project_root(),
+                              capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout.strip() or None if proc.returncode == 0 else None
 
 
 def _slug(text: str, n: int = 4) -> str:
@@ -105,6 +120,8 @@ class Job:
             "cost_usd": 0.0,
             "tokens": 0,
         }
+        if recipe["kind"] == "code":
+            spec["base_commit"] = git_head()  # anchor for out/changes.diff; None if not a git repo
         job.save_spec(spec)
         job.save_state({
             "intent": intent, "round": 0, "status": "created",

@@ -95,6 +95,25 @@ every command needs the full `2026-07-24_194925_derive-n6closure`. Accept a uniq
 substring (and `--name`'s slug) and error only on ambiguity.
 
 ## Done
+- **The `feature` recipe was never usable** (found 2026-07-27, before its first run). Four defects,
+  all fixed together:
+  - `deliverable: {type: diff}` starved the `writer` role, whose job is to author
+    `deliverable.path` — so a code job could not produce human-readable notes at all. The
+    deliverable is now `out/notes.tex`, with the change set captured *alongside* it.
+  - `checks.command` was `""`, so `_run_checks` returned `{}` and the round loop gated on nothing.
+    Now `check_provenance.py` + an optional `out/checks.sh` (the code analogue of `derive`'s
+    `out/checks.py`; typically the project's test command).
+  - No `provenance` key, so `_seed_provenance` never seeded a registry. Code jobs deserve
+    traceability too — a reviewer should not have to take the notes on faith.
+  - **`git diff` never showed new files.** A feature job's output is mostly *new* modules, and
+    plain `git diff` reports tracked modifications only; the failure was silent (the exception was
+    swallowed and an empty deliverable touched). Now: `Job.create` records `base_commit` for code
+    jobs, and `_capture_project_diff` marks untracked files intent-to-add (`git add -N .`,
+    index-only) before diffing against that anchor — so the diff covers new files and work the
+    agents committed themselves, and the human gets an exact rollback point.
+  - Team gains `writer` next to `test-writer`; `roles` block runs `code-reviewer` at `xhigh` and
+    the `writer` at `medium`. Tests cover the new-file diff capture and the recipe invariants
+    (every recipe now has a check spine and a provenance registry).
 - **Per-role model / effort / backend, and per-role schedules** (#1 + #8) — `spec["roles"]` maps
   a role name to `{backend, model, effort, when}`, each key falling back to the job default, so an
   untouched job behaves exactly as before. New module `agentteam/staffing.py` owns resolution;

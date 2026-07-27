@@ -328,21 +328,36 @@ def _run_checks(job, spec):
 
 
 def _finalize_deliverable(job, spec):
-    """Ensure the deliverable exists; for code jobs, capture the project diff if it's a git repo."""
+    """Ensure the deliverable exists; for code jobs, always capture the project change set too."""
     d = spec["deliverable"]
     path = os.path.join(job.dir, d["path"])
-    if d["type"] == "diff" and spec["kind"] == "code":
-        try:
-            proc = subprocess.run(["git", "diff"], cwd=project_root(), capture_output=True,
-                                  text=True, timeout=60)
-            if proc.returncode == 0 and proc.stdout.strip():
-                with open(path, "w", encoding="utf-8") as fh:
-                    fh.write(proc.stdout)
-        except (OSError, subprocess.SubprocessError):
-            pass
+    if spec["kind"] == "code":
+        diff_path = path if d["type"] == "diff" else os.path.join(job.out_dir, "changes.diff")
+        _capture_project_diff(diff_path, spec.get("base_commit"))
     if not os.path.exists(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         open(path, "w").close()
+
+
+def _capture_project_diff(path, base_commit):
+    """Write the project's change set to ``path`` (best effort; silent if not a git repo).
+
+    A code job's output is mostly *new* files, which a bare ``git diff`` never shows -- so mark
+    untracked files intent-to-add first (index-only, no content staged). Diffing against the job's
+    ``base_commit`` captures work the agents committed themselves as well as what they left in the
+    working tree.
+    """
+    try:
+        subprocess.run(["git", "add", "-N", "."], cwd=project_root(), capture_output=True,
+                       text=True, timeout=60)
+        cmd = ["git", "diff"] + ([base_commit] if base_commit else [])
+        proc = subprocess.run(cmd, cwd=project_root(), capture_output=True, text=True, timeout=120)
+        if proc.returncode == 0 and proc.stdout.strip():
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(proc.stdout)
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def _accumulate(spec, results):

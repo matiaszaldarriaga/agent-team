@@ -1,15 +1,20 @@
 {
   "name": "feature",
-  "description": "Add a feature to the project code; gated by review + tests, delivered as a diff.",
+  "description": "Add a feature to the project code; gated by review + tests, delivered as tex notes plus the change set.",
   "kind": "code",
   "workdir": "project",
   "team": {
     "lead": "pi",
     "workers": ["worker"],
     "verifier": "code-reviewer",
-    "extra": ["test-writer"]
+    "extra": ["test-writer", "writer"]
   },
-  "deliverable": { "type": "diff", "path": "out/changes.diff" },
-  "checks": { "command": "" },
-  "defaults": { "rounds": 4, "worker_count": 1, "budget_tokens": 300000 }
+  "roles": {
+    "code-reviewer": { "effort": "xhigh" },
+    "writer": { "effort": "medium" }
+  },
+  "deliverable": { "type": "tex", "path": "out/notes.tex" },
+  "provenance": { "registry": "out/provenance.json" },
+  "checks": { "command": "python {TOOL}/bin/check_provenance.py out/notes.tex out/provenance.json && if [ -f out/checks.sh ]; then bash out/checks.sh; fi" },
+  "defaults": { "rounds": 4, "worker_count": 2, "budget_tokens": 300000 }
 }

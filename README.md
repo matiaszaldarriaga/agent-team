@@ -137,10 +137,12 @@ extras author the deliverable (`writer`) / write tests (`test-writer`) → execu
 run → `state.json` + `view.html` update, cost logged. A claim becomes durable *verified* state
 only once the verifier confirms it — so nobody re-verifies it later (the "verified stays verified"
 rule). For a `derive` job, drop a `out/checks.py`; it's run every round as the verification spine.
+For a `feature` job the spine is `out/checks.sh` (typically the project's test command), and the
+change set is captured to `out/changes.diff` against the job's `base_commit` — new files included.
 
 ## Provenance: nothing is invented
 
-For deliverables you read (`derive`, `draft`, `wiki`), every important statement must trace to a
+Every recipe delivers something you read — `feature` included — so every important statement must trace to a
 recorded, reproducible place. The `writer` role keeps two artifacts in lockstep: the deliverable,
 and `out/provenance.json` — a registry mapping each tagged claim to *how to reproduce it*.
 
@@ -152,8 +154,9 @@ and `out/provenance.json` — a registry mapping each tagged claim to *how to re
   while any tag is unbacked or any entry lacks a reproduce pointer. A statement with no
   reproducible backing is not written — it's recorded as an open point instead.
 
-For code (`feature`) the analogue is tests: a change isn't done until `test-writer` has it covered
-and passing.
+For code (`feature`) tests carry most of the weight — a change isn't done until `test-writer` has
+it covered and passing — but the job still delivers tex notes explaining what was built and why,
+with each claim pointing at a test, script, or artifact.
 
 ## Staffing: you or the PI, same artifact
 
