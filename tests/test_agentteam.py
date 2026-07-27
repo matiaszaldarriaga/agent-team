@@ -14,7 +14,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
 
-from agentteam import engine, recipes, roles, staffing  # noqa: E402
+from agentteam import backends, engine, recipes, roles, staffing  # noqa: E402
 from agentteam.jobs import Job                          # noqa: E402
 
 TEAM = {"lead": "pi", "workers": ["worker"], "verifier": "verifier", "extra": ["writer"]}
@@ -86,7 +86,9 @@ class Staffing(unittest.TestCase):
                 "roles": {"verifier": {"backend": "claude"}}}
         got = staffing.resolve(spec, "verifier")
         self.assertEqual(got["backend"], "claude")
-        self.assertEqual(got["model"], "claude-opus-4-8[1m]")  # claude's default, not codex's
+        # claude's own default, whatever it currently is -- never codex's model name
+        self.assertEqual(got["model"], backends.DEFAULTS["claude"]["model"])
+        self.assertNotEqual(got["model"], spec["model"])
         self.assertEqual(got["effort"], "high")                # effort IS portable, so it carries
 
     def test_cli_parsing(self):

@@ -31,7 +31,7 @@ DEFAULT_IDLE_TIMEOUT = 1800  # 30 min of total silence (no stdout AND no file wr
 # switch backend mid-job (see staffing.py), and it then needs that backend's default model --
 # the job-level model name belongs to the other CLI's vocabulary.
 DEFAULTS = {
-    "claude": {"model": "claude-opus-4-8[1m]", "effort": "high"},
+    "claude": {"model": "claude-opus-5[1m]", "effort": "high"},
     "codex": {"model": "gpt-5.6-sol", "effort": "xhigh"},
     "mock": {"model": None, "effort": None},
 }
