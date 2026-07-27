@@ -40,6 +40,33 @@ job run <id>          # run the rounds (spend!) — run in the background for lo
 job resume <id> --say "focus on the resonant channel"
 job freeze <id>       # keep it (weave into the project later)  |  job abandon <id>
 ```
+Also on `job new`: `--name <slug>` (readable job id), `--workers N`, `--budget N`,
+`--idle-timeout N` (hang backstop, default 1800s; 0 disables), `--timeout N` (hard wall-clock,
+off by default).
+
+## Per-role depth (`--role`, repeatable)
+Backend/model/effort are per **role**, not per job — so grind work runs shallow while the check
+runs deep. Keys: `backend | model | effort | when`; anything unset falls back to the job default.
+```
+job new derive "..." --backend codex \
+  --role worker:effort=medium \
+  --role verifier:effort=xhigh,backend=claude \
+  --role writer:when=last
+```
+- **A verifier on a different backend from the workers is a genuinely independent check** — a
+  different model family re-deriving the claim, not the same model grading its own homework.
+  Worth suggesting to the user for derive/draft jobs. A role that switches backend picks up that
+  backend's default model; effort carries across.
+- **`when`** ∈ `every` (default) | `first` | `last` | list of rounds (recipe files only). It
+  schedules a recipe's `extra` roles — `writer:when=last` is one assembly pass at the end instead
+  of a hand-off every round. `last` = the last round of *this run*, so it still fires on an early
+  `[[DONE]]` or a spent budget. Lead and verifier run every round by design.
+- Recipes can carry the same block as a default (`"roles": {...}` in `recipes/<name>.json`); the
+  `--role` flags override it key by key.
+- With `--pi`, the PI may also set per-role depth itself (`ROLE <role>: effort=...` lines),
+  bounded by `policy.json` if present (`max_workers`, `effort_max`, `backends_allowed` are
+  enforced). Policy bounds the PI only — the human's own flags are never clamped.
+- A typo'd role or key fails at `job new`, before anything bills.
 
 ## Conventions
 - Jobs are created in `./jobs/` relative to the current directory (the project you're in).
@@ -47,7 +74,15 @@ job freeze <id>       # keep it (weave into the project later)  |  job abandon <
 - Provenance is enforced for read-deliverables: every claim needs a `\src{key}` resolving in
   `out/provenance.json`; the check spine (incl. `out/checks.py`) blocks "done" while anything is
   unbacked.
-- Each job's `spec.json` records backend/model/effort for provenance; `view.html` shows live state.
+- Each job's `spec.json` records backend/model/effort **per role** for provenance; `view.html`
+  shows live state plus a Staffing table when the team isn't uniform; `log.jsonl` records every
+  call (`role_call`: role, backend, model, effort, tokens). With mixed backends the job-level
+  model line no longer says what produced a given claim — read the per-role rows.
+- **Nothing stops a run mid-round.** The budget and the `.stop` kill-switch are checked *between*
+  rounds, so no in-flight work is discarded and a job always lands easy to resume from. Don't
+  propose mid-round budget cutoffs.
+- Token counts on the `claude` backend currently **undercount badly** (cache tokens aren't
+  counted; see `docs/BACKLOG.md` #7). Codex counts are real. Don't compare the two.
 
 Weaving a finished job's deliverable into the wider project is a separate, human-directed step —
 not automated.
