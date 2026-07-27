@@ -11,7 +11,7 @@ import html
 import os
 from datetime import datetime
 
-from . import TEMPLATES_DIR
+from . import TEMPLATES_DIR, staffing
 
 DEFAULT_PORT = 8757
 
@@ -57,6 +57,7 @@ def render(job) -> None:
         "BACKEND": spec.get("backend", ""),
         "MODEL": spec.get("model") or "—",
         "EFFORT": spec.get("effort") or "—",
+        "ROLES_BLOCK": _roles_block(spec),
         "INTENT": html.escape(spec.get("intent", "")),
         "PLAN": html.escape(state.get("plan", "") or "(no plan yet)"),
         "CLAIMS_ROWS": claims_rows,
@@ -72,6 +73,28 @@ def render(job) -> None:
         out = out.replace("{{" + key + "}}", val)
     with open(job.view_path, "w", encoding="utf-8") as fh:
         fh.write(out)
+
+
+def _roles_block(spec):
+    """The staffing table -- shown only when the team isn't uniform, because then the single
+    backend/model/effort tiles above no longer say what produced a given claim."""
+    if not spec.get("roles"):
+        return ""
+    rows = []
+    for row in staffing.table(spec):
+        count = f' <span class="muted">x{row["n"]}</span>' if row["n"] > 1 else ""
+        when = row["when"]
+        when_cell = ("" if when == "every"
+                     else f'<td>{html.escape(when)}</td>')
+        rows.append(
+            f'<tr><td>{html.escape(row["role"])}{count}</td>'
+            f'<td>{html.escape(row["backend"] or "—")}</td>'
+            f'<td class="dim">{html.escape(row["model"] or "—")}</td>'
+            f'<td>{html.escape(row["effort"] or "—")}</td>'
+            + (when_cell or '<td class="dim">every round</td>') + "</tr>")
+    return ("<h2>Staffing</h2>\n<table class=\"roles\"><thead><tr>"
+            "<th>role</th><th>backend</th><th>model</th><th>effort</th><th>runs</th>"
+            "</tr></thead><tbody>\n" + "\n".join(rows) + "\n</tbody></table>")
 
 
 def _updated_str(spec, state):

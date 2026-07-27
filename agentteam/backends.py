@@ -27,6 +27,15 @@ from dataclasses import dataclass
 
 DEFAULT_IDLE_TIMEOUT = 1800  # 30 min of total silence (no stdout AND no file writes) -> hung
 
+# Per-backend model/effort defaults. These live here (not in the CLI) because a *role* may
+# switch backend mid-job (see staffing.py), and it then needs that backend's default model --
+# the job-level model name belongs to the other CLI's vocabulary.
+DEFAULTS = {
+    "claude": {"model": "claude-opus-4-8[1m]", "effort": "high"},
+    "codex": {"model": "gpt-5.6-sol", "effort": "xhigh"},
+    "mock": {"model": None, "effort": None},
+}
+
 
 @dataclass
 class AgentResult:

@@ -2,6 +2,7 @@
 
   job new <type> "<intent>" [--pi] [--run] [--backend ...] [--model ...] [--effort ...]
                             [--rounds N] [--workers N] [--budget N]
+                            [--role <role>:<key>=<value>,...]   per-role depth, repeatable
   job run <id> [--rounds N]        run (up to N more rounds; default: to the job's round budget)
   job resume <id> [--say "..."] [--rounds N]   inject a direction and continue
   job say <id> "<direction>"       queue a direction for the next round
@@ -23,15 +24,12 @@ import time
 from datetime import datetime
 
 from . import __version__, recipes as recipes_mod, roles as roles_mod
-from . import engine
+from . import backends, engine, staffing
 from .jobs import Job, list_jobs
 
-# Backend defaults. Model/effort are recorded in every spec and shown in the view for provenance.
-BACKEND_DEFAULTS = {
-    "claude": {"model": "claude-opus-4-8[1m]", "effort": "high"},
-    "codex": {"model": "gpt-5.6-sol", "effort": "xhigh"},
-    "mock": {"model": None, "effort": None},
-}
+# Backend defaults live in backends.py (a *role* may switch backend mid-job and then needs that
+# backend's default model). Model/effort are recorded in every spec and shown for provenance.
+BACKEND_DEFAULTS = backends.DEFAULTS
 
 
 def main(argv=None):
@@ -52,6 +50,10 @@ def main(argv=None):
     sp.add_argument("--workers", type=int, default=None)
     sp.add_argument("--budget", type=int, default=None, help="token budget")
     sp.add_argument("--name", default=None, help="short name for the job id (else derived from intent)")
+    sp.add_argument("--role", action="append", default=None, metavar="ROLE:K=V[,K=V]",
+                    help="per-role override, repeatable: backend|model|effort|when. "
+                         "e.g. --role worker:effort=medium --role verifier:effort=xhigh,"
+                         "backend=codex --role writer:when=last")
     sp.add_argument("--timeout", type=int, default=None,
                     help="hard per-call wall-clock seconds (default: off)")
     sp.add_argument("--idle-timeout", type=int, default=None,
@@ -92,7 +94,9 @@ def _dispatch(args):
     if args.cmd == "staff":
         job = _need(args.id)
         engine.staff_with_pi(job)
-        print(f"{args.id}: staffed (worker_count={job.load_spec()['worker_count']})")
+        spec = job.load_spec()
+        print(f"{args.id}: staffed (worker_count={spec['worker_count']})")
+        _print_roles(spec)
         print("--- PI plan ---\n" + (job.load_state().get("plan", "")[:2000]))
         return 0
     if args.cmd == "say":
@@ -139,14 +143,20 @@ def _cmd_new(args):
     d = BACKEND_DEFAULTS[args.backend]
     model = args.model if args.model is not None else d["model"]
     effort = args.effort if args.effort is not None else d["effort"]
-    job = Job.create(job_type=args.type, intent=_read_intent(args.intent), backend=args.backend,
-                     model=model, effort=effort, rounds=args.rounds,
-                     budget_tokens=args.budget, worker_count=args.workers, name=args.name,
-                     timeout=args.timeout, idle_timeout=args.idle_timeout)
+    try:
+        role_cfg = staffing.parse_cli(args.role)
+        job = Job.create(job_type=args.type, intent=_read_intent(args.intent),
+                         backend=args.backend, model=model, effort=effort, rounds=args.rounds,
+                         budget_tokens=args.budget, worker_count=args.workers, name=args.name,
+                         timeout=args.timeout, idle_timeout=args.idle_timeout, roles=role_cfg)
+    except ValueError as err:  # a typo'd role/key -- fail now, not after the first call bills
+        print(f"error: {err}", file=sys.stderr)
+        return 2
     from . import render
     render.render(job)
     print(f"created {job.id}")
     print(f"  backend={args.backend} model={model} effort={effort}")
+    _print_roles(job.load_spec())
     print(f"  dir: {job.dir}")
     print(f"  view: {job.view_path}")
     if args.pi:
@@ -158,6 +168,19 @@ def _cmd_new(args):
     else:
         print(f"  next: job run {job.id}")
     return 0
+
+
+def _print_roles(spec, indent="  "):
+    """Show the resolved per-role staffing, but only when it isn't uniform -- with per-role
+    backends the single job-level model line no longer tells you what produced what."""
+    if not spec.get("roles"):
+        return
+    print(f"{indent}roles:")
+    for row in staffing.table(spec):
+        count = f" x{row['n']}" if row["n"] > 1 else ""
+        sched = "" if row["when"] == "every" else f"  when={row['when']}"
+        print(f"{indent}  {row['role']:<13}{row['backend']:<7} "
+              f"{row['model'] or '—':<24} {row['effort'] or '—':<7}{count}{sched}")
 
 
 def _cmd_run(args):
@@ -187,6 +210,7 @@ def _cmd_status(args):
         spec = job.load_spec()
         import json
         print(json.dumps(spec, indent=2))
+        _print_roles(spec, indent="")
         print(f"view: {job.view_path}")
         return 0
     jobs = list_jobs()

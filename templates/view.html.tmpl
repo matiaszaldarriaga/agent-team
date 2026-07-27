@@ -34,6 +34,10 @@
   table { width:100%; border-collapse:collapse; font-size:13px; }
   td { padding:6px 8px; border-bottom:1px solid var(--border); vertical-align:top; }
   td.r { color:var(--muted); width:2.5em; }
+  th { text-align:left; padding:4px 8px; font-size:11px; text-transform:uppercase;
+       letter-spacing:.04em; color:var(--muted); font-weight:600; border-bottom:1px solid var(--border); }
+  table.roles td { font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  table.roles td.dim { color:var(--muted); }
   .badge { font-size:11px; font-weight:600; padding:1px 7px; border-radius:6px; border:1px solid; }
   .badge.verified{color:#16a34a;border-color:#16a34a55} .badge.refuted{color:#dc2626;border-color:#dc262655}
   .badge.unclear{color:#d97706;border-color:#d9770655}
@@ -59,6 +63,8 @@
     <div class="stat"><div class="k">cost</div><div class="v">${{COST}}</div></div>
     <div class="stat"><div class="k">tokens</div><div class="v">{{TOKENS}}<span class="meta"> / {{BUDGET}}</span></div></div>
   </div>
+
+  {{ROLES_BLOCK}}
 
   <h2>Intent</h2>
   <pre class="intent">{{INTENT}}</pre>

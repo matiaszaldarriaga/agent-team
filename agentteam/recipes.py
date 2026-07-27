@@ -14,6 +14,11 @@ Schema (all fields documented in recipes/*.json):
     verifier   str    -- the independent checker; ALWAYS present (math -> verifier,
                          code -> code-reviewer)
     extra      [str]  -- additional roles run once per round after workers (e.g. test-writer)
+  roles       {}     -- OPTIONAL per-role overrides, keyed by role name (see agentteam/staffing.py):
+                        {"verifier": {"effort": "xhigh"}, "writer": {"when": "last"}}
+                        keys: backend | model | effort | when
+                        (when: "every" (default) | "first" | "last" | [round numbers];
+                         schedules apply to `extra` roles -- lead and verifier run every round)
   deliverable:
     type       str    -- "tex" | "diff" | "notebook" | "html"
     path       str    -- where the deliverable lands, relative to the job dir (e.g. out/notes.tex)
@@ -29,6 +34,7 @@ import json
 import os
 
 from . import RECIPES_DIR
+from . import staffing
 
 
 def load(recipe_name: str) -> dict:
@@ -63,6 +69,9 @@ def _validate(recipe: dict, name: str) -> None:
     recipe["team"].setdefault("workers", ["worker"])
     recipe["team"].setdefault("extra", [])
     recipe["checks"] = recipe.get("checks", {"command": ""})
+    # per-role overrides are optional; validate here so a typo fails at load, not at spend time
+    recipe["roles"] = staffing.normalize(recipe.get("roles"), recipe["team"],
+                                         source=f"recipe {name!r}")
     recipe["defaults"].setdefault("worker_count", 1)
     recipe["defaults"].setdefault("rounds", 4)
     recipe["defaults"].setdefault("budget_tokens", 300000)

@@ -100,8 +100,10 @@ start every problem with a one-shot; invoke the machine only when the problem ou
 - **A shared, cross-job project corpus** (verified results shared across several jobs). Within a
   job, resume-memory is always on; a project-wide verified store is an optional layer to add only
   when an understanding-type job needs it — kept out of the core to avoid re-introducing ceremony.
-- **A PI approval gate** (plan-and-go is the default) and full `policy.json` enforcement (only
-  `max_workers` is enforced today).
+- **A PI approval gate** (plan-and-go is the default). `policy.json` enforces `max_workers`,
+  `effort_max` and `backends_allowed`; `budget_tokens_max` is still reserved.
+- **Stopping a run mid-round.** The budget and the kill-switch are checked *between* rounds only,
+  so no in-flight work is discarded and a job always lands in a state that's easy to resume from.
 - **`draft` / `wiki`** are wired end-to-end but lightly specified; grow them from real use.
 
 ## Architecture map
@@ -113,6 +115,7 @@ agentteam/
   jobs.py               a job = jobs/<id>/ : spec, state, inbox, lifecycle
   recipes.py            load a job type from recipes/*.json (team + deliverable)
   roles.py              load a personality from roles/*.md
+  staffing.py           what each role runs on (backend/model/effort) and when it runs
   engine.py             the round loop: lead -> workers -> verifier -> extras -> checks
   backends.py           vendor-neutral shim: prompt -> codex / claude / mock call
   render.py             write view.html from state

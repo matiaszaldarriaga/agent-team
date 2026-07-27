@@ -16,13 +16,12 @@ Nothing decides the job's fate automatically -- when the loop ends you resume / 
 from __future__ import annotations
 
 import concurrent.futures as cf
-import json
 import os
 import re
 import subprocess
 from datetime import datetime
 
-from . import HOME, backends, render, roles
+from . import HOME, backends, render, roles, staffing
 from .jobs import Job, project_root
 
 
@@ -36,44 +35,73 @@ def _beat(job, spec, state, phase):
     render.render(job)
 
 
-def _load_policy() -> dict:
-    """Bounds for PI-staffed jobs, from policy.json next to the tool (optional)."""
-    path = os.path.join(HOME, "policy.json")
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-
 def staff_with_pi(job: Job) -> None:
-    """Plan-and-go PI staffing: the PI writes an opening brief and may size the worker pool.
+    """Plan-and-go PI staffing: the PI writes an opening brief, may size the worker pool, and
+    may set the depth each role runs at (bounded by policy.json).
 
     Produces the same artifact a human would: an updated spec + an initial plan in state.
     No approval gate (plan-and-go is the default); course-correct later via the inbox.
     """
     spec = job.load_spec()
     state = job.load_state()
+    policy = staffing.load_policy()
     extra = (
         "You are staffing this job (plan-and-go: your plan runs immediately).\n"
         f"Available worker role: {spec['team']['workers'][0]}. "
         f"Current worker_count is {spec['worker_count']}.\n"
         "Write a short opening brief: the sub-goals, how to split them across workers, and the "
         "first concrete tasks. If a different number of parallel workers is clearly better, put a "
-        "line `WORKERS: <n>` (1-6).")
+        "line `WORKERS: <n>` (1-6).\n"
+        + _staffing_menu(spec, policy))
     res = _run_role(job, spec, spec["team"]["lead"], "pi-staffing", state, [], extra)
     state["plan"] = res.text
     m = re.search(r"WORKERS:\s*([1-6])", res.text)
     if m:
         requested = int(m.group(1))
-        cap = _load_policy().get("max_workers")
+        cap = policy.get("max_workers")
         spec["worker_count"] = min(requested, cap) if cap else requested
+    _apply_pi_roles(job, spec, res.text, policy)
     _accumulate(spec, [res])
     job.save_spec(spec)
     job.save_state(state)
     render.render(job)
+
+
+def _staffing_menu(spec, policy) -> str:
+    """Offer the PI the per-role depth dial, listing only what policy.json actually permits."""
+    return (
+        "\nYou may also set the depth each role runs at -- shallow for grind work, deep for the "
+        "verifier. For each role you want to change from the job default, put a line:\n"
+        "  `ROLE <role>: effort=<effort>[, backend=<backend>]`\n"
+        f"Roles on this team: {', '.join(staffing.team_roles(spec['team']))}.\n"
+        f"Effort, cheap -> deep: {', '.join(staffing.allowed_efforts(policy))}. "
+        f"Backends: {', '.join(staffing.allowed_backends(policy))}.\n"
+        f"Omit a role to leave it at the job default ({spec.get('backend')} / "
+        f"{spec.get('effort') or 'backend default'}). Raising effort costs real time and money -- "
+        "give a one-clause reason for each raise. Putting the verifier on a *different* backend "
+        "from the workers buys genuine independence; consider it.")
+
+
+def _apply_pi_roles(job, spec, text, policy):
+    """Fold the PI's `ROLE ...` lines into the spec, clamped by policy.json.
+
+    Lenient by design: a malformed or out-of-team line is dropped and logged, never fatal --
+    the staffing call already cost money, and one bad line shouldn't waste the rest of it.
+    """
+    proposed = staffing.parse_pi(text)
+    if not proposed:
+        return
+    kept, rejected = {}, []
+    for role, cfg in proposed.items():
+        try:
+            kept.update(staffing.normalize({role: cfg}, spec["team"], source="PI staffing"))
+        except ValueError as err:
+            rejected.append(str(err))
+    clamped, notes = staffing.clamp(kept, policy)
+    if clamped:
+        spec["roles"] = staffing.merge(spec.get("roles"), clamped)
+    if clamped or notes or rejected:
+        job.log({"event": "pi_roles", "applied": clamped, "clamped": notes, "rejected": rejected})
 
 
 def run(job: Job, *, max_new_rounds: int | None = None) -> str:
@@ -102,7 +130,6 @@ def run(job: Job, *, max_new_rounds: int | None = None) -> str:
         r = spec["round"]
         state = job.load_state()
         directions = job.drain_inbox(state)
-        round_results = []
         _beat(job, spec, state, f"round {r} · planning")
 
         # 1-2. lead plans
@@ -111,7 +138,7 @@ def run(job: Job, *, max_new_rounds: int | None = None) -> str:
                              "Plan this round. Give each worker one concrete task as a numbered "
                              "list (`1.`, `2.`, ...). If the deliverable is complete AND its checks "
                              "pass, put `[[DONE]]` on its own line.")
-        round_results.append(lead_res)
+        _accumulate(spec, [lead_res])
         state["plan"] = lead_res.text
         tasks = _parse_tasks(lead_res.text, spec["worker_count"])
         _beat(job, spec, state, f"round {r} · workers ({len(tasks)}) running")
@@ -121,7 +148,7 @@ def run(job: Job, *, max_new_rounds: int | None = None) -> str:
         worker_results = _run_parallel(
             job, spec, worker_role, state, directions,
             [f"Your task this round (worker {i+1} of {len(tasks)}):\n{t}" for i, t in enumerate(tasks)])
-        round_results.extend(worker_results)
+        _accumulate(spec, worker_results)
 
         # 4. verifier -- independent, adversarial
         _beat(job, spec, state, f"round {r} · verifying")
@@ -131,14 +158,21 @@ def run(job: Job, *, max_new_rounds: int | None = None) -> str:
                             "re-derive or re-run it yourself. For each, output a line "
                             "`VERIFIED: ...`, `REFUTED: ...`, or `UNCLEAR: ...` with a one-line "
                             "reason.\n\n" + claims_blob)
-        round_results.append(ver_res)
+        _accumulate(spec, [ver_res])
 
-        # 5. extras (writer updates deliverable, test-writer, ...)
+        # 5. extras (writer updates deliverable, test-writer, ...), each on its own `when`
+        #    schedule. `last` fires on the final round of THIS run -- the round budget is spent,
+        #    the lead signalled done, or the budget/kill-switch is about to end it -- so a
+        #    write-up-at-the-end role still gets its pass when a job stops early.
+        final = (done_signal(lead_res) or r >= limit
+                 or _budget_exceeded(spec) or job.stopped())
         for extra_role in spec["team"].get("extra", []):
+            if not staffing.runs_in_round(spec, extra_role, round_no=r, final=final):
+                continue
             _beat(job, spec, state, f"round {r} · {extra_role}")
             ex_res = _run_role(job, spec, extra_role, extra_role, state, directions,
                                _extra_task(extra_role, spec))
-            round_results.append(ex_res)
+            _accumulate(spec, [ex_res])
 
         # record round (compact) + verified claims
         _record_round(state, r, worker_results, ver_res)
@@ -148,7 +182,6 @@ def run(job: Job, *, max_new_rounds: int | None = None) -> str:
         state["checks"] = _run_checks(job, spec)
 
         # 7. persist + render + log
-        _accumulate(spec, round_results)
         state["round"] = r
         job.save_state(state)
         job.save_spec(spec)
@@ -156,7 +189,7 @@ def run(job: Job, *, max_new_rounds: int | None = None) -> str:
         job.log({"event": "round", "round": r, "cost_usd": round(spec["cost_usd"], 4),
                  "tokens": spec["tokens"], "checks_passed": state["checks"].get("passed")})
 
-        if "[[DONE]]" in lead_res.text and state["checks"].get("passed", True):
+        if done_signal(lead_res) and state["checks"].get("passed", True):
             spec["status"] = "done"
             break
     else:
@@ -186,14 +219,21 @@ def _run_parallel(job, spec, role, state, directions, extras):
     return results
 
 
+def done_signal(lead_res) -> bool:
+    return "[[DONE]]" in lead_res.text
+
+
 def _run_role(job, spec, role_name, label, state, directions, extra_task) -> backends.AgentResult:
     prompt = _build_prompt(job, spec, role_name, state, directions, extra_task)
+    cfg = staffing.resolve(spec, role_name)  # this role's backend/model/effort, not the job's
     idle = spec.get("idle_timeout")
     if idle is None:
         idle = backends.DEFAULT_IDLE_TIMEOUT
-    res = backends.run_agent(prompt, backend=spec["backend"], model=spec.get("model"),
-                             effort=spec.get("effort"), cwd=job.dir,
+    res = backends.run_agent(prompt, backend=cfg["backend"], model=cfg["model"],
+                             effort=cfg["effort"], cwd=job.dir,
                              timeout=spec.get("timeout"), idle_timeout=idle)
+    job.log({"event": "role_call", "role": label, "round": spec.get("round", 0),
+             **cfg, "tokens": res.tokens, "ok": res.ok})
     if not res.ok:
         job.log({"event": "agent_error", "role": label, "error": res.error})
     elif res.note:

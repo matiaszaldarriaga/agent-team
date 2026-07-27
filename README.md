@@ -64,6 +64,37 @@ job freeze <id>                          # keep it; you weave it in later
 On Codex instead: add `--backend codex`. Override the model/effort with `--model` / `--effort`
 (both are recorded in the spec and shown in the view, for provenance).
 
+### Per-role depth (`--role`)
+
+Backend, model and effort are properties of a **role**, not of the job — so grind work can run
+shallow while the check runs deep:
+
+```sh
+job new derive "..." --backend codex \
+  --role worker:effort=medium \
+  --role verifier:effort=xhigh,backend=claude \
+  --role writer:when=last
+```
+
+Two things this buys you beyond saving effort on grind work:
+
+- **A verifier on a different backend from the workers is a genuinely independent check** — a
+  different model family re-deriving the claim, rather than the same model grading its own
+  homework. A role that switches backend picks up *that* backend's default model (the job-level
+  model name belongs to the other CLI's vocabulary); effort carries across, since it's a shared
+  vocabulary.
+- **`when` schedules a role**: `every` (default) | `first` | `last` | a list of rounds (recipe
+  files only). `writer:when=last` makes the write-up one assembly pass at the end instead of
+  paying for a hand-off every round. `last` means the last round of *this run* — so it still
+  fires when the lead signals `[[DONE]]` early or the budget runs out, and your deliverable
+  never goes unwritten.
+
+Recipes can carry the same block as a default (`"roles": {"verifier": {"effort": "xhigh"}}` in
+`recipes/<name>.json`); your `--role` flags override it key by key. Anything left unset falls back
+to the job default, so an untouched job behaves exactly as before. Resolved staffing shows up in
+`job new`/`job status`, in the view's **Staffing** table, and per call in `log.jsonl` — with mixed
+backends the single job-level model line no longer tells you what produced a given claim.
+
 ## Lifecycle
 
 ```
@@ -78,6 +109,8 @@ job watch <id>                               live-poll a job's phase until it en
 job serve [--port 8757]                      HTML monitor + inject server for all jobs
 job roles | recipes                          list the installed cast / job types
 ```
+
+`job new` also takes `--role <role>:<key>=<value>,...` (repeatable) — see **Per-role depth** above.
 
 Nothing about a job's fate is baked in. It runs bounded (by `rounds` and `budget_tokens`), stops,
 and hands the decision to you.
@@ -126,9 +159,18 @@ and passing.
 
 A job's team is written either by you (flags) or by the PI (`--pi`) — both produce the same
 `spec.json`, so the runner has one code path. PI-staffed jobs are **plan-and-go** by default (no
-approval gate; course-correct via the inbox). Copy `policy.example.json` → `policy.json` to bound
-what the PI may do; in v0.1 `max_workers` is enforced (it clamps the PI's `WORKERS:` request), the
-rest is reserved.
+approval gate; course-correct via the inbox).
+
+The PI sizes the worker pool (`WORKERS: <n>`) and may set each role's depth by emitting
+`ROLE <role>: effort=<e>[, backend=<b>]` lines in its opening brief — the same `spec["roles"]`
+block your `--role` flags write. A malformed or out-of-team line is dropped and logged, never
+fatal.
+
+Copy `policy.example.json` → `policy.json` to bound what the PI may do: `max_workers` clamps its
+`WORKERS:` request, `effort_max` caps the effort it may ask for, and `backends_allowed` restricts
+which backends it may put a role on (a dropped backend takes its model with it). Every clamp is
+recorded in `log.jsonl`. **Policy bounds the PI, not you** — your own flags are never clamped,
+since you're the principal.
 
 ## Extending
 
@@ -141,7 +183,8 @@ rest is reserved.
 - A shared, cross-job *project corpus* (verified results shared across jobs) — jobs resume their
   own state; a project-wide store is an optional layer to add when an understanding-type job needs
   it.
-- A PI approval gate (plan-and-go is the default) and full policy enforcement.
+- A PI approval gate (plan-and-go is the default). `budget_tokens_max` is still reserved;
+  `max_workers`, `effort_max` and `backends_allowed` are enforced.
 - `draft` / `wiki` are wired end-to-end but lightly specified; grow them from real use.
 
 ## Discipline (learned the hard way)

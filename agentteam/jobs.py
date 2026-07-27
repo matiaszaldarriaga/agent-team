@@ -20,11 +20,14 @@ import json
 import os
 import re
 import shutil
+import threading
 from datetime import datetime
 
-from . import recipes as recipes_mod
+from . import recipes as recipes_mod, staffing
 
 STATUSES = ("created", "running", "stopped", "done", "frozen", "abandoned")
+
+_LOG_LOCK = threading.Lock()  # parallel workers all log their own per-call line
 
 
 def project_root() -> str:
@@ -67,8 +70,11 @@ class Job:
     @classmethod
     def create(cls, *, job_type, intent, backend, model, effort, rounds=None,
                budget_tokens=None, worker_count=None, name=None,
-               timeout=None, idle_timeout=None) -> "Job":
+               timeout=None, idle_timeout=None, roles=None) -> "Job":
         recipe = recipes_mod.load(job_type)
+        # per-role overrides: recipe defaults first, your --role flags on top (key by key)
+        role_cfg = staffing.merge(recipe.get("roles"),
+                                  staffing.normalize(roles, recipe["team"], source="--role"))
         d = recipe["defaults"]
         stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
         slug = _slug(name, n=8) if name else _slug(intent)  # --name overrides the intent-derived slug
@@ -90,6 +96,7 @@ class Job:
             "timeout": timeout,            # hard per-call wall-clock ceiling; None = off
             "idle_timeout": idle_timeout,  # None = backend default (1800s); 0 = off
             "team": recipe["team"],
+            "roles": role_cfg,             # per-role backend/model/effort/when; {} = all uniform
             "kind": recipe["kind"],
             "deliverable": recipe["deliverable"],
             "checks": recipe.get("checks", {"command": ""}),
@@ -225,8 +232,9 @@ class Job:
 
     def log(self, event: dict):
         event = {"ts": datetime.now().isoformat(timespec="seconds"), **event}
-        with open(self.log_path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(event) + "\n")
+        with _LOG_LOCK:  # workers run in parallel threads; keep lines whole
+            with open(self.log_path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(event) + "\n")
 
 
 def list_jobs() -> list["Job"]:
