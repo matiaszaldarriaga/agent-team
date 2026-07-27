@@ -3,8 +3,10 @@
 Run:  python -m unittest discover -s tests    (or: python tests/test_agentteam.py)
 """
 
+import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -14,7 +16,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
 
-from agentteam import backends, engine, recipes, roles, staffing  # noqa: E402
+from unittest import mock                               # noqa: E402
+
+from agentteam import backends, claims, cli, engine, recipes, roles, staffing, tripwires  # noqa: E402
 from agentteam.jobs import Job                          # noqa: E402
 
 TEAM = {"lead": "pi", "workers": ["worker"], "verifier": "verifier", "extra": ["writer"]}
@@ -352,3 +356,377 @@ class ProvenanceChecker(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class ClaimHarvesting(unittest.TestCase):
+    """The round's durable record. A parser that fails quietly here costs more than any other
+    defect in the tool: with no claims, later rounds re-derive everything from scratch."""
+
+    def test_bare_lines_still_parse(self):
+        """codex's house style -- the only one the original line-anchored regex handled."""
+        text = ("VERIFIED: Frequency-sign-free census is exactly 20 of 35 words.\n"
+                "UNCLEAR: the n=8 case — no exact shell available.\n")
+        got = claims.parse(text)
+        self.assertEqual([c["status"] for c in got], ["verified", "unclear"])
+        self.assertTrue(got[0]["text"].startswith("Frequency-sign-free census"))
+
+    def test_markdown_decorated_lines_parse(self):
+        """claude's house style, which silently harvested ZERO claims for a whole 8-round run."""
+        text = (
+            "I re-ran everything independently rather than trusting the worker.\n"
+            "**VERIFIED: commit `dcde3e0` is the split-safe loader** — `git show --stat` agrees\n"
+            "- `VERIFIED: provenance checker reports 35 tags, 0 errors`\n"
+            "  * REFUTED: the blend is C2 — the second derivative jumps at x_low\n"
+            "3. __UNCLEAR__: whether status rows should be rejected\n")
+        got = claims.parse(text)
+        self.assertEqual([c["status"] for c in got],
+                         ["verified", "verified", "refuted", "unclear"])
+        self.assertNotIn("*", got[0]["text"])          # decoration stripped, not carried in
+        self.assertTrue(got[0]["text"].startswith("commit"))
+
+    def test_a_claims_block_wins_over_prose(self):
+        text = ('Prose says VERIFIED: something sloppy\n'
+                '```claims\n'
+                '[{"status":"verified","text":"the real one"},'
+                ' {"status":"refuted","text":"the broken one"}]\n'
+                '```\n')
+        got = claims.parse(text)
+        self.assertEqual(got, [{"status": "verified", "text": "the real one"},
+                               {"status": "refuted", "text": "the broken one"}])
+
+    def test_malformed_block_falls_back_to_the_prose_scan(self):
+        text = "VERIFIED: the fallback worked\n```claims\nnot json at all\n```\n"
+        self.assertEqual(claims.parse(text),
+                         [{"status": "verified", "text": "the fallback worked"}])
+
+    def test_duplicates_collapse(self):
+        text = "VERIFIED: same thing\nVERIFIED: same thing\n"
+        self.assertEqual(len(claims.parse(text)), 1)
+
+    def test_unharvested_is_the_alarm(self):
+        """Mentions a status but nothing parsed => the contract is broken, not "nothing verified"."""
+        self.assertTrue(claims.unharvested("the VERIFIED state is unclear to me, honestly"))
+        self.assertFalse(claims.unharvested("VERIFIED: fine"))
+        self.assertFalse(claims.unharvested("no statuses mentioned at all"))
+
+
+class TaskPlanning(unittest.TestCase):
+    """Surplus tasks are queued, never dropped. Truncating the lead's plan to the worker count is
+    how "implement gauge.py" got assigned eight times and executed zero times."""
+
+    PLAN = ("Plan: finish the foundations.\n"
+            "1. Reconcile the provenance registry and commit.\n"
+            "2. Implement fitlib/loader.py with the split guards.\n"
+            "3. Implement fitlib/gauge.py with the frozen bands.\n"
+            "4. Review the above and run the spine.\n")
+
+    def test_one_worker_defers_the_rest_instead_of_discarding_them(self):
+        assigned, deferred = engine._plan_tasks(self.PLAN, 1, [])
+        self.assertEqual(len(assigned), 1)
+        self.assertIn("Reconcile", assigned[0])
+        self.assertEqual(len(deferred), 3)
+        self.assertTrue(any("gauge.py" in t for t in deferred))
+
+    def test_the_backlog_runs_first_next_round(self):
+        _, deferred = engine._plan_tasks(self.PLAN, 1, [])
+        assigned, still = engine._plan_tasks(self.PLAN, 1, deferred)
+        self.assertIn("loader.py", assigned[0])       # the queue advanced
+        self.assertEqual(len(still), 3)               # and did not grow: same items, dedup'd
+
+    def test_more_workers_than_tasks_does_not_duplicate_work(self):
+        assigned, deferred = engine._plan_tasks("1. only one thing to do\n", 4, [])
+        self.assertEqual(len(assigned), 1)            # not the same task handed to four workers
+        self.assertEqual(deferred, [])
+
+    def test_a_plan_with_no_list_still_yields_a_task(self):
+        assigned, deferred = engine._plan_tasks("no numbered items here", 2, [])
+        self.assertEqual(len(assigned), 1)
+        self.assertEqual(deferred, [])
+
+
+class Tripwires(unittest.TestCase):
+    """Stop when progress flatlines -- at a round boundary, never mid-flight."""
+
+    def _state(self, rounds):
+        state = {}
+        for i, kw in enumerate(rounds, start=1):
+            tripwires.record(state, round_no=i, **kw)
+        return state
+
+    HEALTHY = {"claims": 3, "new_verified": 2, "tasks": ["do a thing"],
+               "tokens": 1000, "checks_passed": True}
+
+    def test_healthy_progress_does_not_trip(self):
+        state = self._state([dict(self.HEALTHY, tasks=[f"task {i}"]) for i in range(4)])
+        self.assertIsNone(tripwires.evaluate({}, state))
+
+    def test_no_parsable_claims_trips_immediately(self):
+        state = self._state([dict(self.HEALTHY, claims=0, new_verified=0)])
+        self.assertIn("no parsable claims", tripwires.evaluate({}, state))
+
+    def test_two_rounds_without_new_verified_claims_trips(self):
+        state = self._state([self.HEALTHY,
+                             dict(self.HEALTHY, new_verified=0, tasks=["a"]),
+                             dict(self.HEALTHY, new_verified=0, tasks=["b"])])
+        self.assertIn("no new verified claims", tripwires.evaluate({}, state))
+
+    def test_the_same_leading_task_three_rounds_running_is_a_livelock(self):
+        same = dict(self.HEALTHY, tasks=["reconcile the provenance registry and commit"])
+        state = self._state([same, same, same])
+        self.assertIn("not advancing", tripwires.evaluate({}, state))
+
+    def test_a_code_job_whose_project_never_changes_trips(self):
+        frozen = dict(self.HEALTHY, fingerprint="deadbeef")
+        state = self._state([dict(frozen, tasks=["a"]), dict(frozen, tasks=["b"]),
+                             dict(frozen, tasks=["c"])])
+        self.assertIn("has not changed", tripwires.evaluate({"kind": "code"}, state))
+        self.assertIsNone(tripwires.evaluate({"kind": "understanding"}, state))  # not a code job
+
+    def test_a_runaway_round_trips(self):
+        rounds = [dict(self.HEALTHY, tasks=[f"t{i}"], tokens=1_000_000) for i in range(3)]
+        rounds.append(dict(self.HEALTHY, tasks=["t9"], tokens=9_000_000))
+        self.assertIn("over 3x", tripwires.evaluate({}, self._state(rounds)))
+
+    def test_tripwires_can_be_switched_off(self):
+        state = self._state([dict(self.HEALTHY, claims=0, new_verified=0)])
+        self.assertIsNone(tripwires.evaluate({"tripwires": False}, state))
+
+
+class ClaudeUsage(unittest.TestCase):
+    """input_tokens alone omits the cache, which is most of an agentic call's real spend."""
+
+    def test_cache_tokens_are_counted(self):
+        itok, otok = backends._claude_usage({"usage": {
+            "input_tokens": 1_200, "cache_creation_input_tokens": 40_000,
+            "cache_read_input_tokens": 900_000, "output_tokens": 7_000}})
+        self.assertEqual((itok, otok), (941_200, 7_000))
+
+    def test_falls_back_to_the_per_model_breakdown(self):
+        itok, otok = backends._claude_usage({"modelUsage": {
+            "claude-opus-5[1m]": {"input_tokens": 10, "cache_read_input_tokens": 500,
+                                  "output_tokens": 20}}})
+        self.assertEqual((itok, otok), (510, 20))
+
+    def test_no_usage_at_all_is_zero_not_a_crash(self):
+        self.assertEqual(backends._claude_usage({}), (0, 0))
+
+
+class RoundLoopIntegration(unittest.TestCase):
+    """End-to-end on the mock backend: the mechanisms that failed in the first real feature run."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        os.environ["AGENT_TEAM_PROJECT"] = self._tmp
+
+    def tearDown(self):
+        os.environ.pop("AGENT_TEAM_PROJECT", None)
+
+    def _job(self, **kw):
+        kw.setdefault("job_type", "derive")
+        kw.setdefault("intent", "exercise the loop")
+        kw.setdefault("backend", "mock")
+        kw.setdefault("model", None)
+        kw.setdefault("effort", None)
+        kw.setdefault("checkpoint_rounds", 0)
+        return Job.create(**kw)
+
+    def test_claims_reach_durable_state(self):
+        """The regression that cost a whole run: a verifier's report must land in state.claims."""
+        job = self._job(rounds=2)
+        engine.run(job)
+        state = job.load_state()
+        verified = [c for c in state["claims"] if c["status"] == "verified"]
+        self.assertTrue(verified, "no claims harvested -- the round has no durable record")
+        self.assertEqual([p["claims"] for p in state["progress"]], [2, 2])
+        self.assertTrue(all(p["new_verified"] >= 1 for p in state["progress"]))
+
+    def test_surplus_tasks_are_queued_not_dropped(self):
+        job = self._job(rounds=1, worker_count=1)
+        engine.run(job)
+        self.assertTrue(job.load_state()["backlog"], "the lead's extra tasks vanished")
+        with open(job.log_path) as fh:
+            events = [json.loads(ln) for ln in fh if ln.strip()]
+        self.assertTrue([e for e in events if e.get("event") == "tasks_deferred"])
+
+    def test_every_role_call_is_kept_on_disk(self):
+        job = self._job(rounds=1)
+        engine.run(job)
+        files = sorted(os.listdir(job.transcript_dir))
+        self.assertIn("r01-lead.txt", files)
+        self.assertIn("r01-verifier.txt", files)
+        with open(os.path.join(job.transcript_dir, "r01-lead.txt")) as fh:
+            body = fh.read()
+        self.assertIn("# role: pi", body)          # header records who/what/how much
+        self.assertIn("mock task one", body)       # and the full reply, not a 600-char excerpt
+
+    def test_the_writer_is_skipped_when_nothing_new_was_verified(self):
+        state = {"claims": [{"status": "verified", "text": "x"}], "writer_seen_verified": 0}
+        self.assertTrue(engine._writer_has_work(state, final=False))
+        state["writer_seen_verified"] = 1
+        self.assertFalse(engine._writer_has_work(state, final=False))
+        self.assertTrue(engine._writer_has_work(state, final=True))  # final pass always runs
+
+    def test_a_writer_with_no_new_claims_costs_nothing(self):
+        job = self._job(rounds=2)
+        with mock.patch.object(engine.claims_mod, "parse", return_value=[]):
+            engine.run(job)
+        with open(job.log_path) as fh:
+            events = [json.loads(ln) for ln in fh if ln.strip()]
+        self.assertTrue([e for e in events if e.get("event") == "writer_skipped"])
+
+    def test_a_flatlined_run_stops_itself(self):
+        """With nothing verifiable, the job stops at the round boundary instead of spending out."""
+        job = self._job(rounds=8)
+        spec = job.load_spec()
+        spec["tripwires"] = True          # mock jobs disable them; this test is about the wire
+        job.save_spec(spec)
+        with mock.patch.object(engine.claims_mod, "parse", return_value=[]):
+            status = engine.run(job)
+        self.assertEqual(status, "stopped")
+        self.assertEqual(job.load_spec()["round"], 1)      # after ONE round, not eight
+        self.assertIn("no parsable claims", job.load_state()["stop_reason"])
+        with open(job.view_path) as fh:
+            self.assertIn("stopped early", fh.read())
+
+    def test_a_blocked_lead_hands_the_job_back(self):
+        job = self._job(rounds=6)
+        with mock.patch.object(engine, "blocked_signal", return_value=True):
+            status = engine.run(job)
+        self.assertEqual(status, "stopped")
+        self.assertEqual(job.load_spec()["round"], 1)
+        self.assertIn("BLOCKED", job.load_state()["stop_reason"])
+
+    def test_a_resumed_run_clears_the_old_stop_reason(self):
+        job = self._job(rounds=4)
+        state = job.load_state()
+        state["stop_reason"] = "an old reason"
+        job.save_state(state)
+        engine.run(job, max_new_rounds=1)
+        self.assertIsNone(job.load_state().get("stop_reason"))
+
+
+class AcceptanceGate(unittest.TestCase):
+    """The human's definition of done -- the team can pass it, never edit it."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        os.environ["AGENT_TEAM_PROJECT"] = self._tmp
+
+    def tearDown(self):
+        os.environ.pop("AGENT_TEAM_PROJECT", None)
+
+    def _job(self, acceptance, guard=None):
+        return Job.create(job_type="derive", intent="gated", backend="mock", model=None,
+                          effort=None, rounds=1, checkpoint_rounds=0,
+                          acceptance=acceptance, acceptance_guard=guard)
+
+    def test_a_passing_gate_is_recorded(self):
+        job = self._job("exit 0")
+        engine.run(job)
+        self.assertTrue(job.load_state()["acceptance"]["passed"])
+
+    def test_a_failing_gate_blocks_done(self):
+        job = self._job("exit 1")
+        with mock.patch.object(engine, "done_signal", return_value=True):
+            status = engine.run(job)
+        self.assertEqual(status, "stopped")           # the lead said done; the gate said no
+        self.assertFalse(job.load_state()["acceptance"]["passed"])
+
+    def test_a_passing_gate_lets_done_through(self):
+        job = self._job("exit 0")
+        with mock.patch.object(engine, "done_signal", return_value=True):
+            self.assertEqual(engine.run(job), "done")
+
+    def test_editing_the_gate_fails_it(self):
+        target = os.path.join(self._tmp, "test_acceptance.py")
+        with open(target, "w") as fh:
+            fh.write("assert True\n")
+        job = self._job("exit 0", guard=["test_acceptance.py"])
+        self.assertTrue(job.load_spec()["acceptance"]["files"]["test_acceptance.py"])
+        with open(target, "w") as fh:                 # the team "fixes" the gate
+            fh.write("# nothing to see here\n")
+        engine.run(job)
+        acc = job.load_state()["acceptance"]
+        self.assertFalse(acc["passed"])
+        self.assertEqual(acc["tampered"], ["test_acceptance.py"])
+        self.assertIn("never edited", acc["detail"])
+
+    def test_no_gate_configured_is_not_a_gate(self):
+        job = Job.create(job_type="derive", intent="ungated", backend="mock", model=None,
+                         effort=None, rounds=1, checkpoint_rounds=0)
+        engine.run(job)
+        self.assertEqual(job.load_state()["acceptance"], {})
+
+
+class ReadableDeliverable(unittest.TestCase):
+    """A deliverable the human cannot open is not a deliverable."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        os.environ["AGENT_TEAM_PROJECT"] = self._tmp
+
+    def tearDown(self):
+        os.environ.pop("AGENT_TEAM_PROJECT", None)
+
+    def test_a_tex_deliverable_is_compiled_to_pdf(self):
+        if not shutil.which("pdflatex"):
+            self.skipTest("pdflatex not installed")
+        job = Job.create(job_type="derive", intent="readable", backend="mock", model=None,
+                         effort=None, rounds=1, checkpoint_rounds=0)
+        tex = os.path.join(job.dir, "out", "notes.tex")
+        with open(tex, "w") as fh:
+            fh.write("\\documentclass{article}\\begin{document}Hello.\\end{document}\n")
+        engine._finalize_deliverable(job, job.load_spec())
+        pdf = os.path.join(job.dir, "out", "notes.pdf")
+        self.assertTrue(os.path.exists(pdf) and os.path.getsize(pdf) > 0)
+
+    def test_an_empty_tex_deliverable_is_not_compiled(self):
+        job = Job.create(job_type="derive", intent="empty", backend="mock", model=None,
+                         effort=None, rounds=1, checkpoint_rounds=0)
+        tex = os.path.join(job.dir, "out", "notes.tex")
+        open(tex, "w").close()
+        engine._finalize_deliverable(job, job.load_spec())   # must not raise
+        self.assertFalse(os.path.exists(os.path.join(job.dir, "out", "notes.pdf")))
+
+
+class Checkpoint(unittest.TestCase):
+    """A fresh job stops for a look before spending its whole budget."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        os.environ["AGENT_TEAM_PROJECT"] = self._tmp
+
+    def tearDown(self):
+        os.environ.pop("AGENT_TEAM_PROJECT", None)
+
+    def test_first_run_stops_at_the_checkpoint_then_resumes(self):
+        job = Job.create(job_type="derive", intent="checkpointed", backend="mock", model=None,
+                         effort=None, rounds=8, checkpoint_rounds=2)
+        self.assertEqual(job.load_spec()["checkpoint_rounds"], 2)
+
+        args = argparse.Namespace(cmd="run", id=job.id, rounds=None, say=None)
+        cli._cmd_run(args)
+        self.assertEqual(job.load_spec()["round"], 2)        # not 8
+        self.assertEqual(job.load_spec()["rounds"], 8)       # budget itself untouched
+
+        cli._cmd_run(argparse.Namespace(cmd="resume", id=job.id, rounds=None, say=None))
+        self.assertEqual(job.load_spec()["round"], 8)        # resume runs it out
+
+    def test_an_explicit_round_count_overrides_the_checkpoint(self):
+        job = Job.create(job_type="derive", intent="explicit", backend="mock", model=None,
+                         effort=None, rounds=8, checkpoint_rounds=2)
+        cli._cmd_run(argparse.Namespace(cmd="run", id=job.id, rounds=3, say=None))
+        self.assertEqual(job.load_spec()["round"], 3)
+
+    def test_a_failed_compile_leaves_no_litter_in_out(self):
+        if not shutil.which("pdflatex"):
+            self.skipTest("pdflatex not installed")
+        job = Job.create(job_type="derive", intent="broken tex", backend="mock", model=None,
+                         effort=None, rounds=1, checkpoint_rounds=0)
+        tex = os.path.join(job.dir, "out", "notes.tex")
+        with open(tex, "w") as fh:
+            fh.write("\\documentclass{article}\\begin{document}\\undefinedmacro\\end{document}\n")
+        engine._finalize_deliverable(job, job.load_spec())
+        litter = [f for f in os.listdir(os.path.join(job.dir, "out"))
+                  if f.endswith((".aux", ".log", ".out", ".toc"))]
+        self.assertEqual(litter, [], f"pdflatex left {litter} in out/")

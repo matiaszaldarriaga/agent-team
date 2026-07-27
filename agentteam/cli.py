@@ -54,6 +54,14 @@ def main(argv=None):
                     help="per-role override, repeatable: backend|model|effort|when. "
                          "e.g. --role worker:effort=medium --role verifier:effort=xhigh,"
                          "backend=codex --role writer:when=last")
+    sp.add_argument("--acceptance", default=None, metavar="CMD",
+                    help="acceptance gate you wrote yourself: a command that must exit 0 before "
+                         "the job may be DONE (placeholders {PROJECT} {JOB} {TOOL})")
+    sp.add_argument("--acceptance-guard", action="append", default=None, metavar="PATH",
+                    help="hash-pin an acceptance file so the team can pass it but never edit it "
+                         "(repeatable)")
+    sp.add_argument("--checkpoint", type=int, default=2, metavar="N",
+                    help="stop a fresh job after N rounds for a human look (0 = off, default 2)")
     sp.add_argument("--timeout", type=int, default=None,
                     help="hard per-call wall-clock seconds (default: off)")
     sp.add_argument("--idle-timeout", type=int, default=None,
@@ -148,7 +156,9 @@ def _cmd_new(args):
         job = Job.create(job_type=args.type, intent=_read_intent(args.intent),
                          backend=args.backend, model=model, effort=effort, rounds=args.rounds,
                          budget_tokens=args.budget, worker_count=args.workers, name=args.name,
-                         timeout=args.timeout, idle_timeout=args.idle_timeout, roles=role_cfg)
+                         timeout=args.timeout, idle_timeout=args.idle_timeout, roles=role_cfg,
+                         acceptance=args.acceptance, acceptance_guard=args.acceptance_guard,
+                         checkpoint_rounds=args.checkpoint)
     except ValueError as err:  # a typo'd role/key -- fail now, not after the first call bills
         print(f"error: {err}", file=sys.stderr)
         return 2
@@ -188,18 +198,33 @@ def _cmd_run(args):
     if args.cmd == "resume" and getattr(args, "say", None):
         job.say(args.say)
     spec = job.load_spec()
+    checkpoint = None
     if args.rounds is not None:
         spec["rounds"] = spec.get("round", 0) + args.rounds
         job.save_spec(spec)
+    elif spec.get("round", 0) == 0 and spec.get("checkpoint_rounds"):
+        # a fresh job stops for a look before spending its whole budget: the cheapest round to
+        # notice a job is doing the wrong thing is an early one
+        checkpoint = min(spec["checkpoint_rounds"], spec.get("rounds", 0))
     elif spec.get("round", 0) >= spec.get("rounds", 0):
         # already at the round budget: extend by the recipe default so resume does something
         add = recipes_mod.load(spec["type"])["defaults"]["rounds"]
         spec["rounds"] = spec["round"] + add
         job.save_spec(spec)
         print(f"  extended round budget by {add}")
-    status = engine.run(job)
-    print(f"{args.id}: {status}  (round {job.load_spec()['round']}, "
-          f"${job.load_spec()['cost_usd']:.3f})")
+    status = engine.run(job, max_new_rounds=checkpoint)
+    spec = job.load_spec()
+    print(f"{args.id}: {status}  (round {spec['round']}, ${spec['cost_usd']:.3f}, "
+          f"{spec['tokens']:,} tokens)")
+    reason = job.load_state().get("stop_reason")
+    if reason:
+        print(f"  STOPPED EARLY: {reason}")
+    elif checkpoint and status == "stopped" and spec["round"] < spec["rounds"]:
+        print(f"  checkpoint after {spec['round']} round(s) — read the view, then "
+              f"`job resume {args.id}` to continue to round {spec['rounds']}")
+    acc = job.load_state().get("acceptance") or {}
+    if acc:
+        print(f"  acceptance: {'PASSED' if acc.get('passed') else 'FAILED'}")
     print(f"  decide next: job resume {args.id} --say \"...\" | job freeze {args.id} | job abandon {args.id}")
     return 0
 

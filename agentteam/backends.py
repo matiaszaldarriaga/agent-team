@@ -166,12 +166,36 @@ def _run_claude(prompt, *, model, effort, cwd, timeout, idle_timeout) -> AgentRe
         data = json.loads(stdout)
         text = data.get("result") or data.get("text") or ""
         cost = float(data.get("total_cost_usd") or 0.0)
-        usage = data.get("usage") or {}
-        itok = int(usage.get("input_tokens") or 0)
-        otok = int(usage.get("output_tokens") or 0)
+        itok, otok = _claude_usage(data)
     except (json.JSONDecodeError, ValueError, TypeError):
         text = stdout.strip()  # fall back to raw stdout (e.g. killed mid-run)
     return _finalize("claude", text, itok, otok, killed, stderr, cost_usd=cost)
+
+
+def _claude_usage(data) -> tuple[int, int]:
+    """Input/output tokens including the cache.
+
+    ``input_tokens`` alone counts only the uncached remainder, so on a long agentic call -- where
+    almost everything is a cache read -- it reports a small fraction of what was actually spent.
+    That made the budget guard nearly inert for any role running on this backend, and per-role
+    spend uncomparable across backends. Sum the cache fields too, and fall back to the per-model
+    ``modelUsage`` breakdown when the top-level block is absent.
+    """
+    def _sum(u):
+        return (int(u.get("input_tokens") or 0)
+                + int(u.get("cache_creation_input_tokens") or 0)
+                + int(u.get("cache_read_input_tokens") or 0),
+                int(u.get("output_tokens") or 0))
+
+    usage = data.get("usage") or {}
+    itok, otok = _sum(usage) if usage else (0, 0)
+    if not itok and not otok:
+        for per_model in (data.get("modelUsage") or {}).values():
+            if isinstance(per_model, dict):
+                i, o = _sum(per_model)
+                itok += i
+                otok += o
+    return itok, otok
 
 
 # --- OpenAI Codex CLI --------------------------------------------------------
@@ -274,5 +298,19 @@ def _run_mock(prompt, *, cwd) -> AgentResult:
     except OSError:
         pass
     head = "\n".join(prompt.strip().splitlines()[:3])
-    text = f"[mock {role}] acknowledged. Prompt head:\n{head}"
+    text = f"[mock {role}] acknowledged. Prompt head:\n{head}\n" + _mock_payload(role)
     return AgentResult(text=text, backend="mock", output_tokens=max(1, len(prompt) // 4))
+
+
+def _mock_payload(role):
+    """Role-shaped output, so the mock exercises the real contracts and not just the plumbing:
+    the lead emits a numbered plan (task assignment + backlog), the verifier emits a claims
+    block (claim harvesting + progress tracking)."""
+    if role in ("verifier", "code-reviewer"):
+        return ('```claims\n[{"status": "verified", "text": "mock re-derived the round\'s work"},'
+                '\n {"status": "unclear", "text": "mock could not settle one point"}]\n```')
+    if role == "pi":
+        return ("1. mock task one: advance the first sub-goal\n"
+                "2. mock task two: advance the second sub-goal\n"
+                "3. mock task three: advance the third sub-goal\n")
+    return ""

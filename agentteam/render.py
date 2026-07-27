@@ -43,6 +43,20 @@ def render(job) -> None:
     if state.get("rounds_log"):
         last_verifier = state["rounds_log"][-1].get("verifier", "")
 
+    banner = ""
+    if state.get("stop_reason"):
+        banner = ('<p class="bad"><b>stopped early:</b> '
+                  + html.escape(state["stop_reason"]) + "</p>")
+    acceptance = state.get("acceptance") or {}
+    if acceptance:
+        cls = "ok" if acceptance.get("passed") else "bad"
+        label = "PASSED" if acceptance.get("passed") else "FAILED"
+        banner += (f'<p class="{cls}"><b>acceptance gate:</b> {label} — '
+                   + html.escape((acceptance.get("detail") or "")[:200]) + "</p>")
+    if state.get("backlog"):
+        queued = "".join(f"<li>{html.escape(t[:200])}</li>" for t in state["backlog"][:8])
+        banner += f"<p class='muted'>queued for later rounds:</p><ul class='muted'>{queued}</ul>"
+
     values = {
         "ID": job.id,
         "TYPE": spec.get("type", ""),
@@ -63,6 +77,7 @@ def render(job) -> None:
         "CLAIMS_ROWS": claims_rows,
         "CHECKS": html.escape(checks_txt),
         "CHECKS_CLASS": checks_cls,
+        "BANNER": banner,
         "VERIFIER": html.escape(last_verifier or "(no verifier output yet)"),
         "DELIVERABLE_PATH": html.escape(spec.get("deliverable", {}).get("path", "")),
         "PORT": str(DEFAULT_PORT),

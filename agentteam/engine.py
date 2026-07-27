@@ -16,12 +16,15 @@ Nothing decides the job's fate automatically -- when the loop ends you resume / 
 from __future__ import annotations
 
 import concurrent.futures as cf
+import hashlib
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 from datetime import datetime
 
-from . import HOME, backends, render, roles, staffing
+from . import HOME, backends, claims as claims_mod, render, roles, staffing, tripwires
 from .jobs import Job, project_root
 
 
@@ -108,6 +111,9 @@ def run(job: Job, *, max_new_rounds: int | None = None) -> str:
     spec = job.load_spec()
     recipe = job.recipe()
     job.clear_stop()
+    opening = job.load_state()
+    if opening.pop("stop_reason", None):  # a resumed run is not still stopped for the old reason
+        job.save_state(opening)
     spec["status"] = "running"
     job.save_spec(spec)
     job.write_pid()
@@ -133,14 +139,16 @@ def run(job: Job, *, max_new_rounds: int | None = None) -> str:
         _beat(job, spec, state, f"round {r} · planning")
 
         # 1-2. lead plans
+        round_start_tokens = spec.get("tokens", 0)
         lead = spec["team"]["lead"]
-        lead_res = _run_role(job, spec, lead, "lead", state, directions,
-                             "Plan this round. Give each worker one concrete task as a numbered "
-                             "list (`1.`, `2.`, ...). If the deliverable is complete AND its checks "
-                             "pass, put `[[DONE]]` on its own line.")
+        lead_res = _run_role(job, spec, lead, "lead", state, directions, _lead_task(spec, state))
         _accumulate(spec, [lead_res])
         state["plan"] = lead_res.text
-        tasks = _parse_tasks(lead_res.text, spec["worker_count"])
+        tasks, deferred = _plan_tasks(lead_res.text, spec["worker_count"], state.get("backlog"))
+        state["backlog"] = deferred
+        if deferred:
+            job.log({"event": "tasks_deferred", "round": r, "assigned": len(tasks),
+                     "deferred": deferred})
         _beat(job, spec, state, f"round {r} · workers ({len(tasks)}) running")
 
         # 3. workers in parallel
@@ -155,10 +163,12 @@ def run(job: Job, *, max_new_rounds: int | None = None) -> str:
         claims_blob = "\n\n".join(f"[worker-{i+1}] {wr.text}" for i, wr in enumerate(worker_results))
         ver_res = _run_role(job, spec, spec["team"]["verifier"], "verifier", state, directions,
                             "Independently verify each worker claim below. Do NOT trust it -- "
-                            "re-derive or re-run it yourself. For each, output a line "
-                            "`VERIFIED: ...`, `REFUTED: ...`, or `UNCLEAR: ...` with a one-line "
-                            "reason.\n\n" + claims_blob)
+                            "re-derive or re-run it yourself.\n\n"
+                            + claims_mod.BLOCK_INSTRUCTION + "\n\n" + claims_blob)
         _accumulate(spec, [ver_res])
+        if claims_mod.unharvested(ver_res.text):
+            job.log({"event": "claims_unharvested", "round": r,
+                     "mentions": claims_mod.mentions(ver_res.text)})
 
         # 5. extras (writer updates deliverable, test-writer, ...), each on its own `when`
         #    schedule. `last` fires on the final round of THIS run -- the round budget is spent,
@@ -166,31 +176,54 @@ def run(job: Job, *, max_new_rounds: int | None = None) -> str:
         #    write-up-at-the-end role still gets its pass when a job stops early.
         final = (done_signal(lead_res) or r >= limit
                  or _budget_exceeded(spec) or job.stopped())
+        # record round (compact) + verified claims -- before the extras, so the writer is handed
+        # this round's ledger rather than having to go establish it for itself
+        harvest = _record_round(state, r, worker_results, ver_res)
+
         for extra_role in spec["team"].get("extra", []):
             if not staffing.runs_in_round(spec, extra_role, round_no=r, final=final):
+                continue
+            if extra_role == "writer" and not _writer_has_work(state, final):
+                job.log({"event": "writer_skipped", "round": r,
+                         "reason": "no new verified claims since its last pass"})
                 continue
             _beat(job, spec, state, f"round {r} · {extra_role}")
             ex_res = _run_role(job, spec, extra_role, extra_role, state, directions,
                                _extra_task(extra_role, spec))
             _accumulate(spec, [ex_res])
+            if extra_role == "writer":
+                state["writer_seen_verified"] = _verified_count(state)
 
-        # record round (compact) + verified claims
-        _record_round(state, r, worker_results, ver_res)
-
-        # 6. executable checks
+        # 6. executable checks, then the human's acceptance gate (which the team cannot edit)
         _beat(job, spec, state, f"round {r} · checks")
         state["checks"] = _run_checks(job, spec)
+        state["acceptance"] = _run_acceptance(job, spec)
 
         # 7. persist + render + log
         state["round"] = r
+        tripwires.record(state, round_no=r, claims=harvest["claims"],
+                         new_verified=harvest["new_verified"], tasks=tasks,
+                         tokens=spec.get("tokens", 0) - round_start_tokens,
+                         checks_passed=state["checks"].get("passed"),
+                         fingerprint=_project_fingerprint(spec))
         job.save_state(state)
         job.save_spec(spec)
         render.render(job)
         job.log({"event": "round", "round": r, "cost_usd": round(spec["cost_usd"], 4),
                  "tokens": spec["tokens"], "checks_passed": state["checks"].get("passed")})
 
-        if done_signal(lead_res) and state["checks"].get("passed", True):
+        if done_signal(lead_res) and state["checks"].get("passed", True) \
+                and state["acceptance"].get("passed", True):
             spec["status"] = "done"
+            break
+
+        tripped = ("the lead signalled [[BLOCKED]] -- it cannot make progress without a human"
+                   if blocked_signal(lead_res) else tripwires.evaluate(spec, state))
+        if tripped:
+            spec["status"] = "stopped"
+            state["stop_reason"] = tripped
+            job.save_state(state)
+            job.log({"event": "tripwire", "round": r, "reason": tripped})
             break
     else:
         spec["status"] = "stopped"  # hit the round limit without a DONE
@@ -223,6 +256,11 @@ def done_signal(lead_res) -> bool:
     return "[[DONE]]" in lead_res.text
 
 
+def blocked_signal(lead_res) -> bool:
+    """The lead's escape hatch: it can hand the job back instead of spinning out the budget."""
+    return "[[BLOCKED]]" in lead_res.text
+
+
 def _run_role(job, spec, role_name, label, state, directions, extra_task) -> backends.AgentResult:
     prompt = _build_prompt(job, spec, role_name, state, directions, extra_task)
     cfg = staffing.resolve(spec, role_name)  # this role's backend/model/effort, not the job's
@@ -232,6 +270,9 @@ def _run_role(job, spec, role_name, label, state, directions, extra_task) -> bac
     res = backends.run_agent(prompt, backend=cfg["backend"], model=cfg["model"],
                              effort=cfg["effort"], cwd=job.dir,
                              timeout=spec.get("timeout"), idle_timeout=idle)
+    job.save_transcript(spec.get("round", 0), label, res.text, header={
+        "role": role_name, "label": label, "round": spec.get("round", 0),
+        "tokens": res.tokens, "ok": res.ok, **cfg})
     job.log({"event": "role_call", "role": label, "round": spec.get("round", 0),
              **cfg, "tokens": res.tokens, "ok": res.ok})
     if not res.ok:
@@ -272,36 +313,80 @@ def _build_prompt(job, spec, role_name, state, directions, extra_task) -> str:
     return "\n".join(lines)
 
 
+def _lead_task(spec, state):
+    """The lead's brief -- including how many workers it actually has.
+
+    It used to be asked for "a task per worker" without ever being told the worker count, while
+    the engine silently kept only the first ``worker_count`` items. A lead planning for a team
+    that no longer exists loses most of its plan every round, which is exactly how real work
+    (build the next module) can be re-queued for eight rounds and executed zero times.
+    """
+    n = spec["worker_count"]
+    backlog = state.get("backlog") or []
+    lines = [
+        f"Plan this round. You have exactly {n} worker(s) available, so give at most {n} "
+        f"concrete task(s) as a numbered list (`1.`, `2.`, ...) -- one per worker.",
+        "Anything beyond that is queued and run in a later round, not this one, so put the task "
+        "that most advances the intent first.",
+        "Before planning, compare the intent's required deliverables against what actually "
+        "exists. If bookkeeping keeps crowding out the substance, say so and reorder.",
+        "If the deliverable is complete AND its checks pass, put `[[DONE]]` on its own line. "
+        "If you cannot make progress and need the human, put `[[BLOCKED]]` on its own line.",
+    ]
+    if backlog:
+        queued = "\n".join(f"  - {t}" for t in backlog[:6])
+        lines.append(f"Queued from earlier rounds (these run first unless you re-order "
+                     f"them):\n{queued}")
+    return "\n".join(lines)
+
+
 def _extra_task(role, spec):
     if role == "writer":
-        return (f"Update the deliverable {spec['deliverable']['path']} so it reflects the current "
-                "verified state. Write only what is verified; mark open points explicitly.")
+        return (
+            f"Transcribe the verified ledger above into {spec['deliverable']['path']}, and keep "
+            "the provenance registry in step with it.\n"
+            "You are NOT a verifier: do not re-derive, re-run tests, or re-establish what is "
+            "already recorded as verified. Anything not in the ledger is an open point, not a "
+            "claim -- write it under open points and move on.\n"
+            "Extend and refine what is already written rather than rewriting it. If nothing has "
+            "been verified since your last pass, change nothing and reply `NOOP`.")
     if role == "test-writer":
         return ("Write or extend tests that exercise this round's changes, then run them. Report "
-                "pass/fail; the changes are not done until tests pass.")
+                "pass/fail; the changes are not done until tests pass. Never write a test that "
+                "asserts an intended deliverable is still missing -- that pins the gap instead of "
+                "closing it. Record gaps as open points, not as passing tests.")
     return "Do your role's standard job for this round given the context above."
 
 
 # --- helpers -----------------------------------------------------------------
 
-def _parse_tasks(lead_text, n):
-    tasks = re.findall(r"^\s*\d+[.)]\s+(.*)$", lead_text, flags=re.MULTILINE)
-    tasks = [t.strip() for t in tasks if t.strip()]
-    if not tasks:
-        tasks = ["Advance the intent per the latest plan; report concrete results."]
-    # pad/truncate to n workers
-    if len(tasks) < n:
-        tasks += [tasks[-1]] * (n - len(tasks))
-    return tasks[:n]
+def _plan_tasks(lead_text, n, backlog=None):
+    """``(assigned, deferred)``: the backlog runs first, and surplus tasks are kept, not dropped.
+
+    Truncating the lead's plan to the worker count silently discarded whatever came after item
+    ``n``, every round. Now the remainder is carried to the next round, so over-planning costs a
+    round of latency instead of the work itself.
+    """
+    parsed = [t.strip() for t in re.findall(r"^\s*\d+[.)]\s+(.*)$", lead_text, flags=re.MULTILINE)]
+    parsed = [t for t in parsed if t]
+    queue, seen = [], set()
+    for task in list(backlog or []) + parsed:
+        key = re.sub(r"\s+", " ", task).strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            queue.append(task)
+    if not queue:
+        queue = ["Advance the intent per the latest plan; report concrete results."]
+    return queue[:max(1, n)], queue[max(1, n):]
 
 
 def _record_round(state, r, worker_results, ver_res):
-    for line in ver_res.text.splitlines():
-        m = re.match(r"\s*(VERIFIED|REFUTED|UNCLEAR)\s*[:\-]\s*(.+)", line, re.IGNORECASE)
-        if m:
-            state.setdefault("claims", []).append(
-                {"round": r, "status": m.group(1).lower().replace("verified", "verified"),
-                 "text": m.group(2).strip()[:400]})
+    """Harvest the round's claims into durable state; return what was found."""
+    before = _verified_count(state)
+    harvested = claims_mod.parse(ver_res.text)
+    for entry in harvested:
+        state.setdefault("claims", []).append(
+            {"round": r, "status": entry["status"], "text": entry["text"]})
     # keep the claims list bounded (compaction: verified are durable, drop stale unclear/refuted)
     claims = state.get("claims", [])
     verified = [c for c in claims if c["status"] == "verified"]
@@ -310,6 +395,23 @@ def _record_round(state, r, worker_results, ver_res):
     state.setdefault("rounds_log", []).append(
         {"round": r, "workers": len(worker_results), "verifier": ver_res.text[:600]})
     state["rounds_log"] = state["rounds_log"][-30:]
+    return {"claims": len(harvested), "new_verified": max(0, _verified_count(state) - before)}
+
+
+def _verified_count(state):
+    return sum(1 for c in state.get("claims", []) if c.get("status") == "verified")
+
+
+def _writer_has_work(state, final) -> bool:
+    """The writer transcribes verified state, so with nothing newly verified it has nothing to do.
+
+    Running it anyway is not harmless: handed an empty ledger it goes and re-establishes the
+    verified state itself, at full depth, over a document that grows every round -- which is how
+    a write-up role can end up consuming most of a run.
+    """
+    if final:
+        return True
+    return _verified_count(state) > state.get("writer_seen_verified", 0)
 
 
 def _run_checks(job, spec):
@@ -327,6 +429,64 @@ def _run_checks(job, spec):
         return {"command": cmd, "passed": False, "detail": "checks timed out (600s)"}
 
 
+def _run_acceptance(job, spec):
+    """The human's acceptance gate: red before the run, and the team may not edit it.
+
+    ``checks`` are written by the team, so they can only ever say "what we claimed is cited and
+    our own tests pass" -- they cannot say "this is what the human asked for". The acceptance
+    command points at a file the human wrote in advance; its hash is pinned at creation, so the
+    only way past it is to make it pass. ``[[DONE]]`` is refused while it fails.
+    """
+    cfg = spec.get("acceptance") or {}
+    cmd = cfg.get("command")
+    if not cmd:
+        return {}
+    tampered = [p for p, want in (cfg.get("files") or {}).items()
+                if _sha256(_abs_in_project(p)) != want]
+    if tampered:
+        return {"command": cmd, "passed": False, "tampered": tampered,
+                "detail": ("acceptance file(s) modified since the job was created: "
+                           + ", ".join(tampered) + " -- the gate may be passed, never edited")}
+    cmd_r = cmd.replace("{TOOL}", HOME).replace("{JOB}", job.dir).replace(
+        "{PROJECT}", project_root())
+    try:
+        proc = subprocess.run(cmd_r, cwd=job.dir, shell=True, capture_output=True,
+                              text=True, timeout=1800)
+        return {"command": cmd_r, "passed": proc.returncode == 0,
+                "detail": (proc.stdout + proc.stderr).strip()[-2000:]}
+    except subprocess.TimeoutExpired:
+        return {"command": cmd_r, "passed": False, "detail": "acceptance timed out (1800s)"}
+
+
+def _abs_in_project(path):
+    return path if os.path.isabs(path) else os.path.join(project_root(), path)
+
+
+def _sha256(path):
+    try:
+        with open(path, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()
+    except OSError:
+        return None
+
+
+def _project_fingerprint(spec):
+    """A hash of the project's change set, so "nothing was built" is detectable."""
+    if spec.get("kind") != "code":
+        return None
+    try:
+        subprocess.run(["git", "add", "-N", "."], cwd=project_root(),
+                       capture_output=True, text=True, timeout=60)
+        cmd = ["git", "diff"] + ([spec["base_commit"]] if spec.get("base_commit") else [])
+        proc = subprocess.run(cmd, cwd=project_root(), capture_output=True,
+                              text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return hashlib.sha256(proc.stdout.encode("utf-8", "replace")).hexdigest()
+
+
 def _finalize_deliverable(job, spec):
     """Ensure the deliverable exists; for code jobs, always capture the project change set too."""
     d = spec["deliverable"]
@@ -337,6 +497,31 @@ def _finalize_deliverable(job, spec):
     if not os.path.exists(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         open(path, "w").close()
+    if d["type"] == "tex":
+        _compile_pdf(path)
+
+
+def _compile_pdf(tex_path):
+    """Leave a readable PDF next to the tex. A deliverable the human cannot open isn't one.
+
+    Built in a scratch directory and copied back, so a failed or page-less compile leaves no
+    ``.aux``/``.log`` litter in ``out/`` -- what lands there is read, and increasingly committed.
+    """
+    if not shutil.which("pdflatex") or not os.path.getsize(tex_path):
+        return
+    build = tempfile.mkdtemp(prefix="agentteam_tex_")
+    try:
+        for _ in range(2):  # twice, so \ref/\label and the ToC settle
+            subprocess.run(["pdflatex", "-interaction=nonstopmode", "-halt-on-error",
+                            "-output-directory", build, tex_path],
+                           capture_output=True, text=True, timeout=300)
+        built = os.path.join(build, os.path.splitext(os.path.basename(tex_path))[0] + ".pdf")
+        if os.path.exists(built) and os.path.getsize(built):
+            shutil.copyfile(built, os.path.splitext(tex_path)[0] + ".pdf")
+    except (OSError, subprocess.SubprocessError):
+        pass
+    finally:
+        shutil.rmtree(build, ignore_errors=True)
 
 
 def _capture_project_diff(path, base_commit):

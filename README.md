@@ -133,12 +133,54 @@ You only ever touch **`view.html`** (watch + steer) and **`out/`** (read the res
 ## Each round
 
 lead plans → workers execute in parallel → **verifier independently re-checks** (never trusts) →
-extras author the deliverable (`writer`) / write tests (`test-writer`) → executable **checks**
-run → `state.json` + `view.html` update, cost logged. A claim becomes durable *verified* state
-only once the verifier confirms it — so nobody re-verifies it later (the "verified stays verified"
-rule). For a `derive` job, drop a `out/checks.py`; it's run every round as the verification spine.
-For a `feature` job the spine is `out/checks.sh` (typically the project's test command), and the
-change set is captured to `out/changes.diff` against the job's `base_commit` — new files included.
+claims are harvested → extras author the deliverable (`writer`) / write tests (`test-writer`) →
+executable **checks** run → the human's **acceptance gate** runs → progress tripwires are
+evaluated → `state.json` + `view.html` update, cost logged. A claim becomes durable *verified*
+state only once the verifier confirms it — so nobody re-verifies it later (the "verified stays
+verified" rule). For a `derive` job, drop a `out/checks.py`; it's run every round as the
+verification spine. For a `feature` job the spine is `out/checks.sh` (typically the project's test
+command), and the change set is captured to `out/changes.diff` against the job's `base_commit` —
+new files included.
+
+The lead is told how many workers it has, and any task beyond that count is **queued to the
+backlog and run in a later round**, never dropped. It can end a round with `[[DONE]]`, or hand the
+job back with `[[BLOCKED]]`.
+
+Every role call's full reply is kept in `jobs/<id>/transcript/r<NN>-<role>.txt`, so a finished job
+can still be explained afterwards.
+
+## Nothing load-bearing is lost quietly
+
+Two silent losses cost a real run most of its budget: a verifier's claims that the harvester
+never parsed (so every round re-derived everything), and a lead's tasks past `worker_count` that
+the engine discarded (so the real work was re-queued for eight rounds and executed zero times).
+Both are now explicit contracts with alarms:
+
+- **Claims** are asked for as a machine-readable block, with a decoration-tolerant prose scan as
+  fallback (`agentteam/claims.py`). A report that mentions a status but parses to nothing is
+  logged as a broken contract, not counted as zero.
+- **Progress tripwires** (`agentteam/tripwires.py`) stop the run at a round boundary — never
+  mid-flight — when the verifier returns no claims, no new claim is verified for two rounds, the
+  same task leads the plan three rounds running, a code job's project stops changing, or a round's
+  spend blows past the running median. `job resume` continues if you disagree.
+- **A fresh job stops after 2 rounds** for a look (`--checkpoint N`, `0` to disable). The cheapest
+  round to notice a job is doing the wrong thing is an early one.
+
+## The acceptance gate: your definition of done
+
+`checks` are written by the team, so at best they say "what we claimed is cited and our own tests
+pass". They cannot say "this is what the human asked for" — and a team measured only on citations
+will optimise citations, up to writing tests that pin a missing deliverable in place.
+
+So write the acceptance test yourself, before the run, and let it be red:
+
+```sh
+job new feature "@intent.txt" --acceptance "cd {PROJECT} && pytest tests/test_acceptance.py" \
+                             --acceptance-guard tests/test_acceptance.py
+```
+
+The guarded file's hash is pinned at creation: the team can make it pass, never edit it. `[[DONE]]`
+is refused while it fails, and the result is shown in `view.html` and by `job run`.
 
 ## Provenance: nothing is invented
 

@@ -16,6 +16,7 @@ resume(+direction) / freeze / abandon.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -37,6 +38,14 @@ def project_root() -> str:
 
 def jobs_root() -> str:
     return os.environ.get("AGENT_TEAM_JOBS", os.path.join(project_root(), "jobs"))
+
+
+def _sha256(path) -> str | None:
+    try:
+        with open(path, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()
+    except OSError:
+        return None
 
 
 def git_head() -> str | None:
@@ -80,12 +89,32 @@ class Job:
     def work_dir(self):    return os.path.join(self.dir, "work")
     @property
     def out_dir(self):     return os.path.join(self.dir, "out")
+    @property
+    def transcript_dir(self): return os.path.join(self.dir, "transcript")
+
+    def save_transcript(self, round_no, label, text, header=None):
+        """Keep every role call's full reply on disk.
+
+        ``state.json`` keeps only the newest plan and 600 characters of the last verifier report,
+        so a finished job could not be explained after the fact -- you could see that eight rounds
+        happened and not what any of them was asked to do. Disk is cheap; post-mortems are not.
+        """
+        try:
+            os.makedirs(self.transcript_dir, exist_ok=True)
+            path = os.path.join(self.transcript_dir, f"r{int(round_no):02d}-{label}.txt")
+            with open(path, "w", encoding="utf-8") as fh:
+                if header:
+                    fh.write("".join(f"# {k}: {v}\n" for k, v in header.items()) + "\n")
+                fh.write((text or "")[:400_000])
+        except OSError:
+            pass
 
     # --- creation ---
     @classmethod
     def create(cls, *, job_type, intent, backend, model, effort, rounds=None,
                budget_tokens=None, worker_count=None, name=None,
-               timeout=None, idle_timeout=None, roles=None) -> "Job":
+               timeout=None, idle_timeout=None, roles=None,
+               acceptance=None, acceptance_guard=None, checkpoint_rounds=2) -> "Job":
         recipe = recipes_mod.load(job_type)
         # per-role overrides: recipe defaults first, your --role flags on top (key by key)
         role_cfg = staffing.merge(recipe.get("roles"),
@@ -122,11 +151,23 @@ class Job:
         }
         if recipe["kind"] == "code":
             spec["base_commit"] = git_head()  # anchor for out/changes.diff; None if not a git repo
+        # progress tripwires: on for real backends, off for `mock` (which exists to exercise the
+        # machinery, and would otherwise trip its own stall detector)
+        spec["tripwires"] = backend != "mock"
+        # stop for a human look after this many rounds of a fresh job; `--rounds N` overrides
+        spec["checkpoint_rounds"] = checkpoint_rounds
+        if acceptance:
+            spec["acceptance"] = {
+                "command": acceptance,
+                # hash-pinned so the gate can be passed but never edited
+                "files": {p: _sha256(p if os.path.isabs(p) else os.path.join(project_root(), p))
+                          for p in (acceptance_guard or [])},
+            }
         job.save_spec(spec)
         job.save_state({
             "intent": intent, "round": 0, "status": "created",
-            "plan": "", "rounds_log": [], "claims": [],
-            "checks": {}, "inbox_cursor": 0,
+            "plan": "", "rounds_log": [], "claims": [], "backlog": [],
+            "checks": {}, "acceptance": {}, "progress": [], "inbox_cursor": 0,
         })
         job._seed_deliverable(recipe)
         job._seed_provenance(recipe)

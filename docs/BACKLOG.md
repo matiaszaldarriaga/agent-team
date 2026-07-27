@@ -59,7 +59,7 @@ Per-role effort (#1) is the real lever here: shallow workers, deep verifier.
 `--name` now lets you set the job id, but the auto-slug still scrapes the intent's first words
 (which can be a preamble). Could skip obvious preface lines or summarize. Minor.
 
-### 7. Claude token accounting misses cache tokens → budget guard is inert  — MEDIUM (accuracy)
+### 7. Claude token accounting misses cache tokens → budget guard is inert  — ✅ DONE (see Done section)
 `_run_claude` sets `itok = usage.input_tokens`, `otok = usage.output_tokens`, and
 `AgentResult.tokens = itok + otok`. Claude reports cached context in **separate** fields
 (`cache_read_input_tokens`, `cache_creation_input_tokens`), so nearly all real consumption is
@@ -95,6 +95,35 @@ every command needs the full `2026-07-24_194925_derive-n6closure`. Accept a uniq
 substring (and `--name`'s slug) and error only on ambiguity.
 
 ## Done
+- **Post-mortem of the first `feature` run (2026-07-27): 13.6M tokens, 8 rounds, one module of
+  five, and no headroom number.** Comparable derive runs cost 24M–371M, so the spend was not the
+  anomaly — the *yield* was. Root cause, then the fixes:
+  - `_record_round` harvested claims with a line-anchored regex. The verifier ran on `claude`,
+    whose house style is `**VERIFIED: ...**` and `` - `VERIFIED: ...` `` — **0 of 8 rounds
+    harvested**, versus 23–72 claims in every all-codex job. So "verified stays verified" was
+    inert: every round told every role "Verified so far: (none yet)". The lead re-planned work
+    already done; the writer, whose task is to *transcribe* the ledger, had nothing to transcribe
+    and so re-established the verified state itself every round — 63% of the run's tokens.
+    → `agentteam/claims.py`: explicit ```` ```claims ```` block, decoration-tolerant fallback,
+    and `unharvested()` so a mentions-but-parses-to-nothing report is an alarm.
+  - The lead was never told its `worker_count`, and `_parse_tasks` silently truncated its plan to
+    the first `n` items. With the PI staffing 4 workers and the human cutting to 1, three quarters
+    of every plan hit the floor — "implement gauge.py" was queued eight times and run zero times.
+    → the lead is told the count; surplus tasks go to `state["backlog"]` and run next round.
+  - Nothing measured deliverable progress, so the team optimised the only visible gradient
+    (citation integrity) and even wrote tests asserting the intended modules were *still absent*.
+    → progress tripwires (`agentteam/tripwires.py`), a 2-round checkpoint on fresh jobs, and a
+    hash-pinned human acceptance gate that `[[DONE]]` cannot bypass.
+  - The writer ran every round regardless of whether anything new was verified. → it is skipped
+    unless the ledger grew, its brief forbids re-verifying, and `NOOP` is an allowed answer.
+  - `checks.sh` compiled the tex in a temp dir and deleted it, so the human could not read the
+    deliverable at all. → `_compile_pdf` puts `out/notes.pdf` next to the tex (built in scratch,
+    only the PDF copied back, no `.aux`/`.log` litter).
+  - Per-round role text was thrown away (600 chars of the last verifier report survived), so the
+    run could not be explained afterwards. → full transcripts in `jobs/<id>/transcript/`.
+  - Claude token accounting omitted cache reads (#7), which on an agentic call is most of the
+    spend — the budget guard was blind to any role on that backend. → `_claude_usage` sums the
+    cache fields and falls back to `modelUsage`.
 - **The `feature` recipe was never usable** (found 2026-07-27, before its first run). Four defects,
   all fixed together:
   - `deliverable: {type: diff}` starved the `writer` role, whose job is to author
