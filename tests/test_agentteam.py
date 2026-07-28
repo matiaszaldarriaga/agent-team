@@ -4,6 +4,7 @@ Run:  python -m unittest discover -s tests    (or: python tests/test_agentteam.p
 """
 
 import argparse
+import base64
 import json
 import os
 import shutil
@@ -791,3 +792,60 @@ class SpineRunner(unittest.TestCase):
         got = self._run("echo suite ran\necho SPINE OK\n", executable=False)
         self.assertEqual(got.returncode, 0)
         self.assertIn("suite ran", got.stdout)
+
+    def test_a_deliverable_with_figures_compiles(self):
+        """\\includegraphics resolves against the working directory, not the source file --
+        so a notes.tex referencing figures/ only builds if pdflatex runs in out/."""
+        if not shutil.which("pdflatex"):
+            self.skipTest("pdflatex not installed")
+        job = Job.create(job_type="derive", intent="figures", backend="mock", model=None,
+                         effort=None, rounds=1, checkpoint_rounds=0)
+        out = os.path.join(job.dir, "out")
+        os.makedirs(os.path.join(out, "figures"), exist_ok=True)
+        # a 1x1 PNG, so \includegraphics has something real to find
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAA"
+            "AABJRU5ErkJggg==")
+        with open(os.path.join(out, "figures", "plot.png"), "wb") as fh:
+            fh.write(png)
+        with open(os.path.join(out, "notes.tex"), "w") as fh:
+            fh.write("\\documentclass{article}\\usepackage{graphicx}\\begin{document}\n"
+                     "\\includegraphics[width=2cm]{figures/plot.png}\n\\end{document}\n")
+        engine._finalize_deliverable(job, job.load_spec())
+        pdf = os.path.join(out, "notes.pdf")
+        self.assertTrue(os.path.exists(pdf) and os.path.getsize(pdf) > 0,
+                        "a deliverable with figures did not build")
+
+
+class ProvenancePathRoots(unittest.TestCase):
+    """A code job's registry is project-relative; the checker runs from the job dir."""
+
+    def test_project_relative_paths_resolve_from_the_job_dir(self):
+        root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, "tests"))
+        open(os.path.join(root, "tests", "test_x.py"), "w").close()
+        job_out = os.path.join(root, "jobs", "j1", "out")
+        os.makedirs(job_out)
+        with open(os.path.join(job_out, "notes.tex"), "w") as fh:
+            fh.write(r"the claim \src{k}." + "\n")
+        with open(os.path.join(job_out, "provenance.json"), "w") as fh:
+            json.dump({"k": {"statement": "s", "type": "check",
+                             "reproduce": "tests/test_x.py::test_x"}}, fh)
+        got = subprocess.run(
+            [sys.executable, os.path.join(REPO, "bin", "check_provenance.py"),
+             "out/notes.tex", "out/provenance.json"],
+            cwd=os.path.join(root, "jobs", "j1"), capture_output=True, text=True)
+        self.assertEqual(got.returncode, 0, got.stdout)
+
+    def test_a_genuinely_missing_path_still_fails_and_says_where_it_looked(self):
+        root = tempfile.mkdtemp()
+        with open(os.path.join(root, "notes.tex"), "w") as fh:
+            fh.write(r"the claim \src{k}." + "\n")
+        with open(os.path.join(root, "provenance.json"), "w") as fh:
+            json.dump({"k": {"statement": "s", "type": "check",
+                             "reproduce": "tests/nope.py"}}, fh)
+        got = subprocess.run(
+            [sys.executable, os.path.join(REPO, "bin", "check_provenance.py"),
+             "notes.tex", "provenance.json"], cwd=root, capture_output=True, text=True)
+        self.assertEqual(got.returncode, 1)
+        self.assertIn("looked in:", got.stdout)

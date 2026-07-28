@@ -35,6 +35,35 @@ REQUIRED = ("statement", "type", "reproduce")
 TAG_RES = (re.compile(r"\\src\{([^}]+)\}"), re.compile(r"\[src:([^\]]+)\]"))
 
 
+def _search_roots(deliverable):
+    """Where a `reproduce` path may be relative to.
+
+    The checker runs from the job directory, but a **code** job's team lives in the surrounding
+    project and naturally writes project-relative paths (`tests/test_x.py`). Insisting on one root
+    turns a correct registry into 35 spurious errors -- which then blocks `[[DONE]]` and burns the
+    remaining rounds. So accept either, in a fixed order, and say which roots were tried when a
+    path genuinely does not exist.
+    """
+    roots, seen = [], set()
+    here = os.path.dirname(os.path.abspath(deliverable))
+    for cand in [os.getcwd(), here] + [os.path.abspath(os.path.join(here, *[".."] * n))
+                                       for n in range(1, 5)]:
+        if cand not in seen:
+            seen.add(cand)
+            roots.append(cand)
+    return roots
+
+
+def _resolve(path, roots):
+    if os.path.isabs(path):
+        return path if os.path.exists(path) else None
+    for root in roots:
+        cand = os.path.join(root, path)
+        if os.path.exists(cand):
+            return cand
+    return None
+
+
 def main(argv):
     if len(argv) != 2:
         print(__doc__)
@@ -59,6 +88,8 @@ def main(argv):
     if not isinstance(registry, dict):
         print(f"ERROR: {registry_path} must be a JSON object of key -> entry")
         return 1
+
+    roots = _search_roots(deliverable)
 
     keys_used = set()
     for rx in TAG_RES:
@@ -85,8 +116,9 @@ def main(argv):
             warnings.append(f"entry {key!r} has unusual type {etype!r}")
         if etype in PATH_TYPES and repro:
             path = repro.split("::", 1)[0].strip()
-            if not os.path.exists(path):
-                errors.append(f"entry {key!r} ({etype}) reproduce path not found: {path}")
+            if not _resolve(path, roots):
+                errors.append(f"entry {key!r} ({etype}) reproduce path not found: {path} "
+                              f"(looked in: {', '.join(roots)})")
         if key not in keys_used:
             warnings.append(f"entry {key!r} is never referenced by a tag")
 

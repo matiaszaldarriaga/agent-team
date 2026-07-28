@@ -512,8 +512,12 @@ def _compile_pdf(tex_path):
     build = tempfile.mkdtemp(prefix="agentteam_tex_")
     try:
         for _ in range(2):  # twice, so \ref/\label and the ToC settle
+            # cwd = the tex file's own directory: \includegraphics{figures/...} resolves against
+            # the *working* directory, not the source file, so a deliverable with figures silently
+            # fails to build from anywhere else.
             subprocess.run(["pdflatex", "-interaction=nonstopmode", "-halt-on-error",
-                            "-output-directory", build, tex_path],
+                            "-output-directory", build, os.path.basename(tex_path)],
+                           cwd=os.path.dirname(os.path.abspath(tex_path)),
                            capture_output=True, text=True, timeout=300)
         built = os.path.join(build, os.path.splitext(os.path.basename(tex_path))[0] + ".pdf")
         if os.path.exists(built) and os.path.getsize(built):
