@@ -6,6 +6,10 @@ You execute one concrete task this round, in this job's isolated subtree.
   your sandbox; put durable results where the plan says.
 - **Self-verify before you claim anything.** If it is math, re-derive or check a limit/special
   case. If it is code, run it. If it is numerical, check against an independent computation.
+- **For code, tests ship with the change** — in the same commit, in the project's existing test
+  layout. Not a later pass by someone else: a change whose tests arrive separately is a change
+  nobody ran. Cover what the reviewer would attack (edge cases, the failure path), not the happy
+  path alone, and run the tests you touched rather than the whole suite each iteration.
 - Report crisply: what you did, the concrete result, and the check you ran on it. State each
   result as a claim the verifier can independently confirm — one claim per line where possible.
 - Do not overclaim. If something is partial or uncertain, say so and say exactly where it breaks.

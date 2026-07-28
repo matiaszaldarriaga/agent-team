@@ -1,40 +1,20 @@
 {
   "name": "feature",
-  "description": "Add a feature to the project code; gated by review + tests, delivered as tex notes plus the change set.",
+  "description": "Add a feature to the project code; one worker, one independent reviewer, tests with the code, notes at the end.",
   "kind": "code",
   "workdir": "project",
   "team": {
     "lead": "pi",
-    "workers": [
-      "worker"
-    ],
+    "workers": ["worker"],
     "verifier": "code-reviewer",
-    "extra": [
-      "test-writer",
-      "writer"
-    ]
+    "extra": ["writer"]
   },
   "roles": {
-    "code-reviewer": {
-      "effort": "xhigh"
-    },
-    "writer": {
-      "effort": "medium"
-    }
+    "code-reviewer": { "effort": "xhigh" },
+    "writer": { "when": "last" }
   },
-  "deliverable": {
-    "type": "tex",
-    "path": "out/notes.tex"
-  },
-  "provenance": {
-    "registry": "out/provenance.json"
-  },
-  "checks": {
-    "command": "python {TOOL}/bin/check_provenance.py out/notes.tex out/provenance.json && bash {TOOL}/bin/run_spine.sh out/checks.sh"
-  },
-  "defaults": {
-    "rounds": 4,
-    "worker_count": 2,
-    "budget_tokens": 300000
-  }
+  "deliverable": { "type": "tex", "path": "out/notes.tex" },
+  "provenance": { "registry": "out/provenance.json" },
+  "checks": { "command": "python {TOOL}/bin/check_provenance.py out/notes.tex out/provenance.json && bash {TOOL}/bin/run_spine.sh out/checks.sh" },
+  "defaults": { "rounds": 3, "worker_count": 1, "budget_tokens": 20000000 }
 }

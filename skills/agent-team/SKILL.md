@@ -48,6 +48,28 @@ off by default), `--checkpoint N` (see below), `--acceptance CMD` + `--acceptanc
 creation. If the human wants a zero-spend scaffold, omit `--pi` and run `job staff <id>` later
 after showing them the configuration.
 
+## Scoping a code job (do this before writing any intent)
+
+The `feature` recipe is deliberately small: **one worker, one independent `code-reviewer`, tests in
+the same commit as the code, one `writer` pass at the end.** Do not add roles or ask for extra
+artifacts unless the user asks. A third agent re-running the suite the worker already ran cost 38%
+of the first real run.
+
+Help the user split the work this way:
+
+1. **They write an executable acceptance test first**, red — that is the specification. Offer to
+   draft it; it is the highest-value thing in the whole setup and it cannot be gamed.
+2. **The intent stays short** (~50 lines) and covers only what a test cannot express: environment
+   and how to run things, frozen conventions, the data boundary, and explicit anti-goals ("do not
+   test the test suite", "do not rewrite module X").
+3. **3 rounds, then read.** Not 8.
+
+Prose demands like "eight named certificates, per-mode breakdowns, bootstrap uncertainties, a
+provenance-backed report" turn a half-day of code into a multi-round research artifact. If the user
+wants a harness they will eyeball themselves, say so and keep it lean — and if the task is small
+and well-understood, say plainly that doing it interactively may be the better call. A job earns
+its overhead when independent verification is the *product*, not when it is ceremony.
+
 ## Yield, not price: what actually goes wrong
 
 A run's failure mode is rarely "too expensive per round" (a derive round is millions of tokens by

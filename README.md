@@ -166,6 +166,32 @@ Both are now explicit contracts with alarms:
 - **A fresh job stops after 2 rounds** for a look (`--checkpoint N`, `0` to disable). The cheapest
   round to notice a job is doing the wrong thing is an early one.
 
+## Writing a code job that stays small
+
+The first real `feature` run cost 37M tokens over two rounds and produced three modules of five.
+Nothing was broken — the team did exactly what it was told. The lesson is about what to tell it:
+
+**Write the acceptance test, not the specification.** A 176-line executable gate says what "done"
+means with no ambiguity and no way to game it. A 256-line prose intent demanding eight named
+certificates, four PSD exponents, per-mode breakdowns and a provenance-backed report says the same
+thing less clearly and asks for four times the work. Keep the intent to the things a test cannot
+express: the environment, the conventions that are frozen, the data boundary, what NOT to do.
+
+**One worker, one independent reviewer.** That pair is the whole point of the format — someone who
+writes and someone with no stake in it who tries to break it. What is *not* needed is a third
+agent re-running the suite the worker already ran: tests ship in the same commit as the code
+(`roles/worker.md`), and "is this actually covered?" is the reviewer's finding to make.
+
+**The write-up comes once, at the end** (`writer: when=last`). A code job's real deliverable is the
+diff and the passing tests; the notes explain them to a human afterwards.
+
+**Few rounds.** Round count multiplies everything. Three, then read the notes and resume — the
+checkpoint does this for you.
+
+Rough cost per round, from the fitlib run: lead ~0.15M, one worker ~4.5M, reviewer ~1.7M. Around
+6M a round at xhigh on real work, plus one write-up pass. Budget accordingly, and don't be alarmed
+that this is millions — a single xhigh agentic call re-reads its context every turn.
+
 ## The acceptance gate: your definition of done
 
 `checks` are written by the team, so at best they say "what we claimed is cited and our own tests

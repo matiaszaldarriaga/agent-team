@@ -51,8 +51,19 @@ class RecipesAndRoles(unittest.TestCase):
         r = recipes.load("feature")
         self.assertEqual(r["deliverable"]["type"], "tex")
         self.assertIn("writer", r["team"]["extra"])
-        self.assertIn("test-writer", r["team"]["extra"])
         self.assertEqual(r["team"]["verifier"], "code-reviewer")
+
+    def test_a_code_job_is_a_worker_and_a_reviewer_not_a_committee(self):
+        """One pair of hands, one independent check, and the write-up once at the end.
+
+        The first real feature run staffed 2 workers + reviewer + test-writer + a writer every
+        round: 6 calls a round, of which the test-writer alone took 38% re-running a 313-test
+        suite that the worker had already run. Tests ship with the code (roles/worker.md); the
+        reviewer's job includes whether the change is covered."""
+        r = recipes.load("feature")
+        self.assertEqual(r["team"]["extra"], ["writer"])
+        self.assertEqual(r["roles"]["writer"]["when"], "last")
+        self.assertEqual(r["defaults"]["worker_count"], 1)
 
     def test_verifierless_recipe_rejected(self):
         with tempfile.TemporaryDirectory() as d:
