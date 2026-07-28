@@ -730,3 +730,53 @@ class Checkpoint(unittest.TestCase):
         litter = [f for f in os.listdir(os.path.join(job.dir, "out"))
                   if f.endswith((".aux", ".log", ".out", ".toc"))]
         self.assertEqual(litter, [], f"pdflatex left {litter} in out/")
+
+
+class SpineRunner(unittest.TestCase):
+    """bin/run_spine.sh: a spine that dies early must not read as a pass."""
+
+    def _run(self, body, executable=True, sentinel=None):
+        d = tempfile.mkdtemp()
+        script = os.path.join(d, "checks.sh")
+        with open(script, "w") as fh:
+            fh.write(body)
+        if executable:
+            os.chmod(script, 0o755)
+        cmd = ["bash", os.path.join(REPO, "bin", "run_spine.sh"), script]
+        if sentinel:
+            cmd.append(sentinel)
+        return subprocess.run(cmd, capture_output=True, text=True)
+
+    def test_a_complete_spine_passes(self):
+        got = self._run("#!/bin/sh\necho running the suite\necho SPINE OK\n")
+        self.assertEqual(got.returncode, 0)
+        self.assertIn("running the suite", got.stdout)
+
+    def test_the_zsh_under_bash_death_no_longer_reads_as_a_pass(self):
+        """The real defect: `${0:a:h:h}` under bash 3.2 exits 0 having run nothing."""
+        got = self._run("#!/bin/bash\nset -u\nJOB=${0:a:h:h}\necho suite ran\necho SPINE OK\n")
+        self.assertNotEqual(got.returncode, 0, "a spine that ran nothing was reported as passing")
+        self.assertNotIn("suite ran", got.stdout)
+        self.assertIn("never printed", got.stdout)
+
+    def test_the_shebang_chooses_the_interpreter(self):
+        """That same script under its own zsh shebang works -- so honour it."""
+        if not shutil.which("zsh"):
+            self.skipTest("zsh not installed")
+        got = self._run("#!/bin/zsh\nset -u\nJOB=${0:a:h}\necho suite ran\necho SPINE OK\n")
+        self.assertEqual(got.returncode, 0, got.stdout)
+        self.assertIn("suite ran", got.stdout)
+
+    def test_a_real_failure_still_fails(self):
+        got = self._run("#!/bin/sh\necho a test failed\nexit 1\n")
+        self.assertEqual(got.returncode, 1)
+
+    def test_a_missing_spine_is_not_a_failure(self):
+        got = subprocess.run(["bash", os.path.join(REPO, "bin", "run_spine.sh"),
+                              "/nonexistent/checks.sh"], capture_output=True, text=True)
+        self.assertEqual(got.returncode, 0)
+
+    def test_a_non_executable_spine_still_runs(self):
+        got = self._run("echo suite ran\necho SPINE OK\n", executable=False)
+        self.assertEqual(got.returncode, 0)
+        self.assertIn("suite ran", got.stdout)
