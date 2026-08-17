@@ -94,6 +94,52 @@ Fix sketch: per-role schedule in the recipe/team spec — `{"role": "writer", "w
 every command needs the full `2026-07-24_194925_derive-n6closure`. Accept a unique prefix or
 substring (and `--name`'s slug) and error only on ambiguity.
 
+### 10. `job staff` silently overwrites the human's explicit `--role` pins  — HIGH
+Observed twice on real runs, and the second time it produced a configuration that would have died
+mid-flight overnight.
+
+The README/skill states *"Policy bounds the PI only — the human's own flags are never clamped."*
+The observed behaviour contradicts that: per-role settings passed at `job new` are written to
+`spec.json` correctly, and then `job staff` overwrites them from the PI's `ROLE <role>: ...` lines.
+
+- **2026-07-29** (`derive-precessing-form-v2`), job created `--backend claude --model claude-opus-5`
+  on every role at the human's explicit request. The PI staffed it with
+  `ROLE verifier: effort=xhigh, backend=codex` and `ROLE writer: effort=high`, and also raised
+  `worker_count` 3 → 4. The reasoning was *good* (verifier independence), but it was not the
+  human's call to make.
+- **2026-07-30** (`derive-precessing-form-v3`), created with explicit
+  `--role verifier:backend=codex,model=gpt-5.6-sol,effort=xhigh` after the human said "force all
+  codex". Staffing overwrote it to `backend=claude` — **while leaving `model=gpt-5.6-sol`**, i.e. a
+  codex model name on the Claude backend. `job staff`'s own summary printed
+  `verifier  claude  gpt-5.6-sol  xhigh` without complaint.
+
+Two distinct bugs:
+1. **Human pins are not pinned.** Record which per-role keys came from a human `--role` flag and
+   have staffing refuse to overwrite exactly those (log the PI's suggestion instead of applying
+   it). A PI-chosen value for a key the human did not set is fine and should still work.
+2. **A PI `ROLE` line that changes `backend` inherits the previous `model`.** Changing the backend
+   must reset `model` to the new backend's default unless the same line names one, and an
+   impossible (backend, model) pair should fail at staffing time — before a night of unattended
+   running — not at the first role call.
+
+Workaround in use: edit `spec.json` between `job staff` and `job run`.
+
+### 11. A provider error is recorded as a successful role call  — HIGH
+`derive-precessing-form-v2`, round 1: `worker-1` returned the literal string
+
+    API Error: 529 Overloaded. This is a server-side issue, usually temporary — try again ...
+
+and `log.jsonl` recorded `{"role": "worker-1", "ok": true, "tokens": 4021433}`. 4M tokens were
+charged for no output, the transcript is 280 bytes, and the lead received the error text *as the
+worker's report* — that worker held the critical path (build the solver, ship the first
+`out/model.py`) and nothing re-assigned it.
+
+Want: detect provider error sentinels in a role reply, mark `ok: false`, and either retry the call
+or record the role as failed in `state` so the lead can re-plan around it. At minimum the token
+charge for a failed call should be visible as such, since right now a 529 is indistinguishable from
+a worker that genuinely had little to say. (Consistent with the standing priority — this is a
+post-call check, it does not stop a run mid-flight.)
+
 ## Done
 - **Post-mortem of the first `feature` run (2026-07-27): 13.6M tokens, 8 rounds, one module of
   five, and no headroom number.** Comparable derive runs cost 24M–371M, so the spend was not the
@@ -192,3 +238,62 @@ substring (and `--name`'s slug) and error only on ambiguity.
 - `budget_tokens_max` in **policy.json** (`max_workers`, `effort_max`, `backends_allowed` are
   enforced as of #1).
 - Flesh out **`draft` / `wiki`** recipes from real use.
+
+### 20. Compaction silently drops UNRESOLVED claims, and the new index counts from it  — HIGH
+
+Found 2026-08-17, running six real jobs. `_record_round` keeps
+`verified[-60:] + recent_other[-20:]`, where `recent_other` is everything not verified. On a
+six-round job the verifier emitted **5 refuted and 30 unclear**; `state.json` ended holding
+**0 refuted and 20 unclear**. Five refutations and ten unresolved items aged out of the
+window and are recoverable only from `transcript/`.
+
+That was survivable while nothing read them. It is not survivable now: `_ledger_index` reports
+"UNRESOLVED n claims — each one is your responsibility" and counts from that same truncated
+list, so it told a team `0 refuted` in a round where five refutations were open and unanswered.
+The fix that closed the original bug reintroduced it one layer up.
+
+Either the compaction must never drop a claim that has not been resolved, or the index must
+count from the transcripts. Preference: the first — a claim is cheap (400 chars) and the
+whole point of the status is that something is owed on it. Cap `verified`, never `refuted`
+or `unclear`.
+
+The general lesson, worth keeping in the file: **the failure mode is never a bad decision,
+it is a filter nobody re-examined.**
+
+### 21. `refuted` / `unclear` is too coarse to act on  — MEDIUM
+
+Same six jobs. Reading the verifier's own texts, `unclear` is carrying two populations that
+demand opposite responses:
+
+- *contested*: "the deliverable says 0.3649; my own calculation gives 0.113–0.137",
+  "the two routes are not an independent bracket and one end contradicts the published
+  significance", "the third significant digit is not reproducible". The verifier disagrees
+  and cannot close it alone. **Somebody must adjudicate.**
+- *unverifiable*: "no browser backend exists in this environment". **Nothing is owed; stop
+  trying.** Three different roles retried this over three rounds before a lead finally wrote
+  "three roles have now tried … stop re-attempting".
+
+The verifier's instinct is sound — it files `refuted` when it can demonstrate the mechanism
+and `unclear` when it cannot close the disagreement — but downstream both are just
+"not verified", so a factor-of-three contradiction in a shipped number sits in the same bin
+as a missing browser.
+
+Suggested statuses: `verified` · `refuted` (demonstrated wrong) · `contested` (I get a
+different answer; needs adjudication) · `unverifiable` (cannot be checked here; record and
+stop) · `open` (not attempted). Only `contested` and `open` count as work owed.
+
+### 22. Say the philosophy in SKILL.md, and stop hand-tuning what each role is passed  — MEDIUM
+
+Written 2026-08-17 after a session spent doing exactly the wrong thing. Faced with roles that
+could not see what they needed, the reflex was to engineer the per-role payload — decide, in
+`_build_prompt`, which slice of state each role should get. That is not achievable and it is
+against the design: **the PI decides.** The engine's job is to make everything available and
+say so; deciding what matters this round is the lead's work, not the harness's.
+
+`SKILL.md` and `docs/DESIGN.md` should state it outright, because the absence of the statement
+is what invites the fiddling:
+
+- The job directory is the shared memory. It is small. Every role may read all of it.
+- The prompt carries an INDEX and the round's task — never a curated copy of state.
+- Roles are told what exists and what is owed. Which of it matters is the PI's call.
+- A filter in the harness is a decision taken away from the PI without telling it.
