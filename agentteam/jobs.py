@@ -91,6 +91,22 @@ class Job:
     def out_dir(self):     return os.path.join(self.dir, "out")
     @property
     def transcript_dir(self): return os.path.join(self.dir, "transcript")
+    @property
+    def reports_dir(self):    return os.path.join(self.dir, "reports")
+
+    def reports_of_round(self, round_no) -> list[str]:
+        """The report files a given round left, newest round first when scanned backwards.
+
+        Reports are written BY the roles, unlike ``transcript/`` which the engine captures.
+        That is the difference that matters: a transcript is a recording, a report is an
+        artifact its author chose the contents of, and it is what the next round reads.
+        """
+        try:
+            names = sorted(os.listdir(self.reports_dir))
+        except OSError:
+            return []
+        pre = f"r{int(round_no):02d}-"
+        return [n for n in names if n.startswith(pre)]
 
     def save_transcript(self, round_no, label, text, header=None):
         """Keep every role call's full reply on disk.
@@ -227,21 +243,32 @@ class Job:
             fh.write(json.dumps({"ts": datetime.now().isoformat(timespec="seconds"),
                                  "text": text}) + "\n")
 
-    def drain_inbox(self, state: dict) -> list[str]:
+    def _inbox_texts(self) -> list[str]:
         if not os.path.exists(self.inbox_path):
             return []
         with open(self.inbox_path, encoding="utf-8") as fh:
             lines = [ln for ln in fh.read().splitlines() if ln.strip()]
-        cursor = state.get("inbox_cursor", 0)
-        new = lines[cursor:]
-        state["inbox_cursor"] = len(lines)
         out = []
-        for ln in new:
+        for ln in lines:
             try:
                 out.append(json.loads(ln)["text"])
             except (json.JSONDecodeError, KeyError):
                 out.append(ln)
         return out
+
+    def drain_inbox(self, state: dict) -> tuple[list[str], int]:
+        """``(every direction ever sent, how many are new this round)``.
+
+        This used to return only the new ones and advance a cursor, so a human direction was
+        put in front of the team for exactly one round and then vanished -- under a heading
+        that called it TOP PRIORITY. A direction is a standing instruction, not a message:
+        it stays in force until the human withdraws it. The cursor survives only to say
+        which ones arrived since the last round.
+        """
+        texts = self._inbox_texts()
+        cursor = min(state.get("inbox_cursor", 0), len(texts))
+        state["inbox_cursor"] = len(texts)
+        return texts, len(texts) - cursor
 
     # --- stop / lifecycle ---
     def request_stop(self):

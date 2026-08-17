@@ -58,6 +58,7 @@ def staff_with_pi(job: Job) -> None:
         + _staffing_menu(spec, policy))
     res = _run_role(job, spec, spec["team"]["lead"], "pi-staffing", state, [], extra)
     state["plan"] = res.text
+    state["opening_brief"] = res.text     # round 1 overwrites `plan`; the brief must survive
     m = re.search(r"WORKERS:\s*([1-6])", res.text)
     if m:
         requested = int(m.group(1))
@@ -112,7 +113,9 @@ def run(job: Job, *, max_new_rounds: int | None = None) -> str:
     recipe = job.recipe()
     job.clear_stop()
     opening = job.load_state()
-    if opening.pop("stop_reason", None):  # a resumed run is not still stopped for the old reason
+    prev_stop = opening.pop("stop_reason", None)
+    if prev_stop:  # not still stopped for the old reason -- but the team must be TOLD it happened
+        opening["last_stop_reason"] = prev_stop
         job.save_state(opening)
     spec["status"] = "running"
     job.save_spec(spec)
@@ -135,13 +138,14 @@ def run(job: Job, *, max_new_rounds: int | None = None) -> str:
         spec["round"] += 1
         r = spec["round"]
         state = job.load_state()
-        directions = job.drain_inbox(state)
+        directions, new_directions = job.drain_inbox(state)
         _beat(job, spec, state, f"round {r} · planning")
 
         # 1-2. lead plans
         round_start_tokens = spec.get("tokens", 0)
         lead = spec["team"]["lead"]
-        lead_res = _run_role(job, spec, lead, "lead", state, directions, _lead_task(spec, state))
+        lead_res = _run_role(job, spec, lead, "lead", state, directions,
+                             _lead_task(spec, state), new_directions)
         _accumulate(spec, [lead_res])
         state["plan"] = lead_res.text
         tasks, deferred = _plan_tasks(lead_res.text, spec["worker_count"], state.get("backlog"))
@@ -155,7 +159,8 @@ def run(job: Job, *, max_new_rounds: int | None = None) -> str:
         worker_role = spec["team"]["workers"][0]
         worker_results = _run_parallel(
             job, spec, worker_role, state, directions,
-            [f"Your task this round (worker {i+1} of {len(tasks)}):\n{t}" for i, t in enumerate(tasks)])
+            [f"Your task this round (worker {i+1} of {len(tasks)}):\n{t}" for i, t in enumerate(tasks)],
+            new_directions)
         _accumulate(spec, worker_results)
 
         # 4. verifier -- independent, adversarial
@@ -164,7 +169,8 @@ def run(job: Job, *, max_new_rounds: int | None = None) -> str:
         ver_res = _run_role(job, spec, spec["team"]["verifier"], "verifier", state, directions,
                             "Independently verify each worker claim below. Do NOT trust it -- "
                             "re-derive or re-run it yourself.\n\n"
-                            + claims_mod.BLOCK_INSTRUCTION + "\n\n" + claims_blob)
+                            + claims_mod.BLOCK_INSTRUCTION + "\n\n" + claims_blob,
+                            new_directions)
         _accumulate(spec, [ver_res])
         if claims_mod.unharvested(ver_res.text):
             job.log({"event": "claims_unharvested", "round": r,
@@ -189,7 +195,7 @@ def run(job: Job, *, max_new_rounds: int | None = None) -> str:
                 continue
             _beat(job, spec, state, f"round {r} · {extra_role}")
             ex_res = _run_role(job, spec, extra_role, extra_role, state, directions,
-                               _extra_task(extra_role, spec))
+                               _extra_task(extra_role, spec), new_directions)
             _accumulate(spec, [ex_res])
             if extra_role == "writer":
                 state["writer_seen_verified"] = _verified_count(state)
@@ -240,12 +246,14 @@ def run(job: Job, *, max_new_rounds: int | None = None) -> str:
 
 # --- role invocation ---------------------------------------------------------
 
-def _run_parallel(job, spec, role, state, directions, extras):
+def _run_parallel(job, spec, role, state, directions, extras, new_directions=0):
     if len(extras) == 1:
-        return [_run_role(job, spec, role, "worker-1", state, directions, extras[0])]
+        return [_run_role(job, spec, role, "worker-1", state, directions, extras[0],
+                          new_directions)]
     results = [None] * len(extras)
     with cf.ThreadPoolExecutor(max_workers=min(len(extras), 6)) as ex:
-        futs = {ex.submit(_run_role, job, spec, role, f"worker-{i+1}", state, directions, e): i
+        futs = {ex.submit(_run_role, job, spec, role, f"worker-{i+1}", state, directions, e,
+                          new_directions): i
                 for i, e in enumerate(extras)}
         for fut in cf.as_completed(futs):
             results[futs[fut]] = fut.result()
@@ -261,8 +269,11 @@ def blocked_signal(lead_res) -> bool:
     return "[[BLOCKED]]" in lead_res.text
 
 
-def _run_role(job, spec, role_name, label, state, directions, extra_task) -> backends.AgentResult:
-    prompt = _build_prompt(job, spec, role_name, state, directions, extra_task)
+def _run_role(job, spec, role_name, label, state, directions, extra_task,
+              new_directions=0) -> backends.AgentResult:
+    os.makedirs(job.reports_dir, exist_ok=True)   # the role writes its report into it
+    prompt = _build_prompt(job, spec, role_name, state, directions, extra_task,
+                           label=label, new_directions=new_directions)
     cfg = staffing.resolve(spec, role_name)  # this role's backend/model/effort, not the job's
     idle = spec.get("idle_timeout")
     if idle is None:
@@ -282,13 +293,81 @@ def _run_role(job, spec, role_name, label, state, directions, extra_task) -> bac
     return res
 
 
-def _build_prompt(job, spec, role_name, state, directions, extra_task) -> str:
+def _gate_txt(d, name):
+    if not d:
+        return f"{name}: not configured"
+    return (f"{name}: PASSED" if d.get("passed")
+            else f"{name}: FAILED -- {(d.get('detail') or '')[:1200]}")
+
+
+def _ledger_index(job, spec, state, directions, new_directions) -> str:
+    """A short INDEX of the ledger plus an order to read it -- not a copy of it.
+
+    The engine used to paste a filtered slice of state into every prompt: the last 12 verified
+    claims and nothing else. Everything a role most needed was therefore invisible to it --
+    what the verifier refuted, what the human's acceptance gate says, why the last run stopped,
+    what any other role actually did. The whole ledger is tens of kilobytes and the roles are
+    agents with file tools sitting in the job directory, so pasting a lossy summary costs more
+    than reading the real thing. This function tells them what is there and what the counts
+    are; the files carry the substance.
+    """
+    claims = state.get("claims", [])
+    by = {s: sum(1 for c in claims if c.get("status") == s)
+          for s in ("verified", "refuted", "unclear")}
+    open_n = by["refuted"] + by["unclear"]
+    prev = spec.get("round", 1) - 1
+    prev_reports = job.reports_of_round(prev) if prev >= 1 else []
+    L = [
+        "\n---\n# THE LEDGER -- read the files, do not work from these counts",
+        "Your working directory IS the job directory. Every path below is relative to it, and "
+        "all of them are small. Read them before you do anything else:",
+        "  spec.json     the contract: the full intent, team, deliverable, check command",
+        "  state.json    the ledger: EVERY claim with its status and round, the current plan, "
+        "the backlog, the check and acceptance results, the round history",
+        "  inbox.jsonl   every human direction ever sent. They do not expire",
+        "  reports/      what each role wrote, per round: r<NN>-<label>.md",
+        "",
+        "Index -- counts only:",
+        f"  claims        {len(claims)}: {by['verified']} verified, {by['refuted']} refuted, "
+        f"{by['unclear']} unclear",
+    ]
+    if open_n:
+        L.append(f"  UNRESOLVED    {open_n} claims are refuted or unclear. Each one is your "
+                 f"responsibility: resolve it, or state in your report why it stands. They are "
+                 f"in state.json under `claims`; the reasoning behind them is in "
+                 f"reports/ and transcript/")
+    L += [
+        f"  directions    {len(directions)} in inbox.jsonl ({new_directions} new this round); "
+        f"all of them remain in force",
+        f"  {_gate_txt(state.get('checks'), 'checks      ')}",
+        f"  {_gate_txt(state.get('acceptance'), 'acceptance  ')}",
+    ]
+    if state.get("last_stop_reason"):
+        L.append(f"  last stop     the previous run stopped: {state['last_stop_reason']}")
+    if state.get("backlog"):
+        L.append(f"  backlog       {len(state['backlog'])} task(s) queued from earlier rounds")
+    L.append(f"  reports       last round left: "
+             f"{', '.join(prev_reports) if prev_reports else '(none)'}")
+    L.append("")
+    L.append("Also present, larger, read only what you need: transcript/ (every role call in "
+             "full), work/ (the sandbox), out/ (the deliverable).")
+    return "\n".join(L)
+
+
+def _report_task(spec, label) -> str:
+    return (
+        f"\n\n# YOUR REPORT -- required, and part of the task\n"
+        f"Before you finish, write `reports/r{spec.get('round', 0):02d}-{label}.md`: what you "
+        f"did, what you found, the numbers, and what you could NOT settle. If you are "
+        f"addressing something previously refuted or left unclear, say which and how.\n"
+        f"This file is what the other roles read next round. Your reply text is not carried "
+        f"forward -- only this file and the ledger are. Keep it factual and short; it is a "
+        f"record, not an essay.")
+
+
+def _build_prompt(job, spec, role_name, state, directions, extra_task,
+                  label=None, new_directions=0) -> str:
     role_md = roles.load(role_name)
-    verified = [c for c in state.get("claims", []) if c.get("status") == "verified"][-12:]
-    verified_txt = "\n".join(f"- {c['text']}" for c in verified) or "- (none yet)"
-    checks = state.get("checks") or {}
-    checks_txt = ("not configured" if not checks else
-                  ("PASSED" if checks.get("passed") else f"FAILED: {checks.get('detail', '')[:300]}"))
     direction_txt = "\n".join(f"- {d}" for d in directions) or "- (none)"
     lines = [
         f"# ROLE: {role_name}",
@@ -305,11 +384,13 @@ def _build_prompt(job, spec, role_name, state, directions, extra_task) -> str:
                      f"summarise changes into the deliverable.")
     lines += [
         "\nLatest plan:\n" + (state.get("plan") or "(none)"),
-        "\nVerified so far (trust these; do NOT re-derive):\n" + verified_txt,
-        f"\nExecutable checks: {checks_txt}",
-        "\nHuman direction (TOP PRIORITY):\n" + direction_txt,
+        _ledger_index(job, spec, state, directions, new_directions),
+        "\nHuman direction (TOP PRIORITY -- every one of these is still in force):\n"
+        + direction_txt,
         "\n# YOUR TASK THIS ROUND\n" + extra_task,
     ]
+    if label:
+        lines.append(_report_task(spec, label))
     return "\n".join(lines)
 
 
@@ -393,7 +474,7 @@ def _record_round(state, r, worker_results, ver_res):
     recent_other = [c for c in claims if c["status"] != "verified"][-20:]
     state["claims"] = verified[-60:] + recent_other
     state.setdefault("rounds_log", []).append(
-        {"round": r, "workers": len(worker_results), "verifier": ver_res.text[:600]})
+        {"round": r, "workers": len(worker_results), "verifier": ver_res.text[:6000]})
     state["rounds_log"] = state["rounds_log"][-30:]
     return {"claims": len(harvested), "new_verified": max(0, _verified_count(state) - before)}
 
