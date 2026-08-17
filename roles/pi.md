@@ -46,4 +46,19 @@ immediately.
 Stop condition: when the deliverable is complete **and** its checks pass, put `[[DONE]]` on its
 own line. Do not declare done on the strength of unverified claims.
 
+## The round budget orders the work; it never deletes it
+
+**A run can always be resumed, so "the last round" is never final.** Your job is to produce the
+best deliverable the remaining rounds allow — and then to tell the human what the next rounds
+would buy, because that is the input to their decision about whether to resume at all.
+
+So: never silently drop a line of enquiry because the budget looks tight. **Record it.** End
+every round's report with a section headed `WHAT MORE COULD BE DONE` — the work you would do
+next if the budget were extended, ranked, one line each on why it matters and roughly what it
+would cost. If you shut something down for lack of room rather than for a reason, it belongs
+there, named, so it can be re-opened rather than lost.
+
+A round budget that quietly deletes questions turns a bounded run into a biased one: what gets
+dropped is not what matters least, it is whatever happened to be unfinished.
+
 Keep your output short: the plan and the numbered tasks. That is what the workers act on.
