@@ -297,3 +297,40 @@ is what invites the fiddling:
 - The prompt carries an INDEX and the round's task — never a curated copy of state.
 - Roles are told what exists and what is owed. Which of it matters is the PI's call.
 - A filter in the harness is a decision taken away from the PI without telling it.
+
+### 23. A direction sent mid-round can be read by nobody, silently  — HIGH
+
+Found 2026-08-17. `job say` appends to `inbox.jsonl` and returns. Nothing is delivered at
+that moment: the inbox is drained once, at the *start* of a round (`engine.py`, top of the
+loop). So a direction is only ever seen if another round begins after it lands.
+
+Observed: a direction was sent at 21:06:05, four minutes into round 7. Round 7 had drained
+the inbox at 21:02 and was the run's last round. No round 8 began. `inbox_cursor` is still
+`0` — the proof that nothing consumed it — and the text sits in `inbox.jsonl` unread. The
+CLI had said `queued for <id>`, the file contains the message, and everything looks fine.
+
+**What is NOT broken, checked before writing this.** The drain happens before the lead runs,
+and `[[DONE]]` comes from that same lead call. So a direction that lands before a round
+starts IS read by the PI, and it decides to stop only afterwards. The decision is not taken
+behind the message.
+
+Two cases, and they need different fixes:
+
+1. **Sent during the final round of the budget.** Knowable at send time. `job say` should
+   look at `spec` and refuse quietly-succeeding: warn on `round >= rounds`, warn when the
+   job is not running at all, and say what to do instead — `job resume --say "..."`, which
+   sends the direction *and* starts a round to read it. (That is exactly why one of the two
+   directions in the test run landed and the other did not.)
+
+2. **Sent during a round in which the PI signals `[[DONE]]`.** Not knowable at send time by
+   anybody. The engine must close it: **do not accept `[[DONE]]` while the inbox has unread
+   entries.** Re-drain before honouring the stop; if anything is unread, run one more round
+   so the direction is seen. `roles/pi.md` already calls human direction TOP PRIORITY, and a
+   stop that outranks an unread instruction contradicts that.
+
+Belt and braces for both: when a run ends, if `inbox_cursor < len(inbox.jsonl)`, say so
+loudly in the CLI's closing line and record it in `state`. A run that finishes with unread
+mail is not a clean finish.
+
+Same family as #20 and #22: the data was on disk the whole time, and the defect is that
+nothing looked at it again.
