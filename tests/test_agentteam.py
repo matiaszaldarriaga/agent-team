@@ -422,6 +422,43 @@ class ClaimHarvesting(unittest.TestCase):
         self.assertFalse(claims.unharvested("no statuses mentioned at all"))
 
 
+class ProgressAccounting(unittest.TestCase):
+    """``new_verified`` drives the stall tripwire, so a wrong count silently kills healthy runs."""
+
+    @staticmethod
+    def _verifier(texts):
+        import json as _json
+        body = _json.dumps([{"status": "verified", "text": t} for t in texts])
+        return type("R", (), {"text": f"```claims\n{body}\n```"})()
+
+    def test_a_long_job_still_registers_progress(self):
+        """The bug: the ledger was capped at 60 verified and progress was a diff of that count,
+        so every job past 60 read zero forever and stopped itself every two rounds."""
+        state = {"claims": [{"round": 1, "status": "verified", "text": f"old {i}"}
+                            for i in range(80)]}
+        got = engine._record_round(state, 2, [], self._verifier(["fresh A", "fresh B"]))
+        self.assertEqual(got["new_verified"], 2)
+        self.assertEqual(len([c for c in state["claims"] if c["status"] == "verified"]), 82,
+                         "verified claims were dropped -- they are the state nobody re-derives")
+
+    def test_an_unresolved_claim_survives_a_long_job(self):
+        """Backlog 20, and the one that cost a real result: the old compaction kept the newest
+        20 non-verified claims, so on a six-round job the verifier's 5 refutations and 30
+        unclears became 0 and 20 in state.json. _ledger_index counts UNRESOLVED from that list,
+        so a lead was told nothing was open in a round where five refutations stood."""
+        import json as _json
+        state = {"claims": [{"round": 1, "status": "unclear", "text": f"old {i}"}
+                            for i in range(40)]}
+        state["claims"].append({"round": 1, "status": "refuted", "text": "the headline is wrong"})
+        body = _json.dumps([{"status": "unclear", "text": f"new {i}"} for i in range(25)])
+        engine._record_round(state, 2, [],
+                             type("R", (), {"text": f"```claims\n{body}\n```"})())
+        kept = [c["text"] for c in state["claims"] if c["status"] == "refuted"]
+        self.assertEqual(kept, ["the headline is wrong"],
+                         "a refutation aged out -- the lead is told 0 refuted and ships it")
+        self.assertEqual(len([c for c in state["claims"] if c["status"] == "unclear"]), 65)
+
+
 class TaskPlanning(unittest.TestCase):
     """Surplus tasks are queued, never dropped. Truncating the lead's plan to the worker count is
     how "implement gauge.py" got assigned eight times and executed zero times."""

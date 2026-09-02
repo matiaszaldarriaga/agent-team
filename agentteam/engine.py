@@ -462,21 +462,27 @@ def _plan_tasks(lead_text, n, backlog=None):
 
 
 def _record_round(state, r, worker_results, ver_res):
-    """Harvest the round's claims into durable state; return what was found."""
-    before = _verified_count(state)
+    """Harvest the round's claims into durable state; return what was found.
+
+    ``new_verified`` is simply what the verifier established this round. It used to be a diff
+    of the stored verified count, while that store was capped at the newest 60: once a job
+    passed that many, the diff read 0 every round however much was verified, and the stall
+    tripwire killed a healthy run every two rounds. Nothing is dropped now either. Verified
+    claims are the durable state the whole design rests on, and a refuted or unclear one is a
+    live task; erasing either to save a few kilobytes costs far more than it saves, and it does
+    so silently.
+    """
     harvested = claims_mod.parse(ver_res.text)
+    new_verified = 0
     for entry in harvested:
+        if entry["status"] == "verified":
+            new_verified += 1
         state.setdefault("claims", []).append(
             {"round": r, "status": entry["status"], "text": entry["text"]})
-    # keep the claims list bounded (compaction: verified are durable, drop stale unclear/refuted)
-    claims = state.get("claims", [])
-    verified = [c for c in claims if c["status"] == "verified"]
-    recent_other = [c for c in claims if c["status"] != "verified"][-20:]
-    state["claims"] = verified[-60:] + recent_other
     state.setdefault("rounds_log", []).append(
         {"round": r, "workers": len(worker_results), "verifier": ver_res.text[:6000]})
     state["rounds_log"] = state["rounds_log"][-30:]
-    return {"claims": len(harvested), "new_verified": max(0, _verified_count(state) - before)}
+    return {"claims": len(harvested), "new_verified": new_verified}
 
 
 def _verified_count(state):

@@ -239,7 +239,7 @@ post-call check, it does not stop a run mid-flight.)
   enforced as of #1).
 - Flesh out **`draft` / `wiki`** recipes from real use.
 
-### 20. Compaction silently drops UNRESOLVED claims, and the new index counts from it  — HIGH
+### 20. Compaction silently drops UNRESOLVED claims, and the new index counts from it  — ✅ DONE 2026-09-02
 
 Found 2026-08-17, running six real jobs. `_record_round` keeps
 `verified[-60:] + recent_other[-20:]`, where `recent_other` is everything not verified. On a
@@ -256,6 +256,13 @@ Either the compaction must never drop a claim that has not been resolved, or the
 count from the transcripts. Preference: the first — a claim is cheap (400 chars) and the
 whole point of the status is that something is owed on it. Cap `verified`, never `refuted`
 or `unclear`.
+
+**Done 2026-09-02.** The compaction is gone outright: `_record_round` appends every harvested
+claim and caps nothing, so `_ledger_index`'s UNRESOLVED count cannot be short. `new_verified`
+is now what the verifier established this round rather than a diff of the stored count, which
+also retires the second half of the bug — past 60 verified claims the diff read 0 every round
+and the stall tripwire killed healthy runs. Two tests in `ProgressAccounting` pin both
+directions: a long job still registers progress, and a refutation survives 25 newer claims.
 
 The general lesson, worth keeping in the file: **the failure mode is never a bad decision,
 it is a filter nobody re-examined.**
